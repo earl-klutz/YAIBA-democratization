@@ -1,6 +1,5 @@
 # src/engine/core/yaiba_loader.py
-# Requirements: pandas, numpy, matplotlib, pyyaml
-#   pip install pandas numpy matplotlib pyyaml
+# Requirements: pandas, numpy, pyyaml
 from __future__ import annotations
 
 import re
@@ -31,8 +30,6 @@ __all__ = [
 # =========================================================
 # プロジェクトルート/出力ルートの決定（src/engine/core からの相対）
 # =========================================================
-# 期待パス: <PROJECT_ROOT>/src/engine/core/yaiba_loader.py
-#           └─ 出力先: <PROJECT_ROOT>/YAIBA_data/...
 SRC_DIR = Path(__file__).resolve().parents[2]   # .../<PROJECT_ROOT>/src
 PROJECT_ROOT = SRC_DIR.parent                   # .../<PROJECT_ROOT>
 DEFAULT_DATA_ROOT = PROJECT_ROOT / "YAIBA_data" # 成果物は常にプロジェクト直下の YAIBA_data へ
@@ -52,32 +49,21 @@ def _build_logger() -> logging.Logger:
 LOGGER = _build_logger()
 
 # ----------------------------
-# 例外/エラー コード方針
-# 2101: 入力ファイル不存在
-# 2104: 引数型不正
-# 2102: レコード型/値不正（継続可: ログ出力）
-# 2100: 予期せぬ処理失敗（致命: raise）
-# ----------------------------
-
-# ----------------------------
 # ユーティリティ
 # ----------------------------
 def _to_datetime_utc(s: str) -> Optional[datetime]:
-    """'YYYY.MM.DD HH:MM:SS' を UTC naive datetime に変換（タイムゾーンは付けない）"""
     try:
         return datetime.strptime(s, "%Y.%m.%d %H:%M:%S")
     except Exception:
         return None
 
 def _event_day_jst(dt_utc: pd.Series) -> pd.Series:
-    """UTC naive datetime -> JST の日付列（date）"""
     if ZoneInfo is None:
         return dt_utc.dt.date
     jst = ZoneInfo("Asia/Tokyo")
     return (dt_utc.dt.tz_localize("UTC").dt.tz_convert(jst)).dt.date
 
 def _hash_name(name: str) -> str:
-    # 安定疑似化：U+5桁
     import hashlib
     h = hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()
     return f"U{int(h[:6], 16) % 100000:05d}"
@@ -146,7 +132,6 @@ class LogData:
         self.__attendance: Optional[pd.DataFrame] = attendance.copy() if attendance is not None else None
         self.__area: Area = Area(self.__position)
 
-        # 出力ルート（※ ここをプロジェクトルート固定に変更）
         self.__root = DEFAULT_DATA_ROOT
         self.__input_dir = self.__root / "input"
         self.__output_dir = self.__root / "output"
@@ -157,13 +142,6 @@ class LogData:
         for d in [self.__input_dir, self.__results_dir, self.__configs_dir, self.__logs_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
-        # 入力のバックアップコピー（失敗は致命ではない）
-        try:
-            shutil.copy2(self.__log_file, self.__input_dir / self.__log_file.name)
-        except Exception:
-            pass
-
-    # --- getters ---
     @property
     def position(self) -> pd.DataFrame: return self.__position
     @property
@@ -177,11 +155,7 @@ class LogData:
     @property
     def time_sync(self) -> Optional[datetime]: return self.__time_sync
 
-    # --- 保存 ---
     def save(self, filename: str, ver: str, data: Any) -> None:
-        """
-        任意データを results/ に保存。DataFrame は CSV、dict は YAML、その他はテキスト化して保存。
-        """
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         safe_ver = f"-{ver}" if ver else ""
         out = self.__results_dir / f"{filename}-{ts}{safe_ver}"
@@ -200,9 +174,9 @@ class LogData:
 
     def save_default_outputs(self, ver: str = "") -> None:
         """
-        設計書の成果物（2DヒートマップPNG / 統計CSV / 実行パラメータYAML / ログ）を出力
+        成果物（実行パラメータYAML / ログ）を出力
+        ※ 可視化成果物は出力しない
         """
-        # 実行パラメータ
         params = {
             "log_file": str(self.__log_file),
             "span": self.__span,
@@ -213,59 +187,11 @@ class LogData:
         with open(self.__configs_dir / f"run_{(ver or 'v1')}_params.yaml", "w", encoding="utf-8") as f:
             yaml.safe_dump(params, f, allow_unicode=True, sort_keys=False)
 
-        # ログの雛形
         self.__logs_dir.mkdir(parents=True, exist_ok=True)
         with open(self.__logs_dir / f"run{datetime.now().strftime('%Y%m%d_%H%M%S')}.log", "w", encoding="utf-8") as f:
             f.write("YAIBA Loader executed.\n")
 
-        # 2D ヒートマップと統計
-        if not self.__position.empty:
-            try:
-                import matplotlib
-                matplotlib.use("Agg")
-                import matplotlib.pyplot as plt
-
-                df = self.__position[["location_x", "location_z"]].dropna()
-                if not df.empty:
-                    x = df["location_x"].values
-                    z = df["location_z"].values
-
-                    # ビン数は自動（範囲×標準偏差で目安）
-                    bins_x = max(10, min(200, int((np.nanmax(x) - np.nanmin(x)) / max(1e-6, (np.nanstd(x) or 1.0)) * 5)))
-                    bins_z = max(10, min(200, int((np.nanmax(z) - np.nanmin(z)) / max(1e-6, (np.nanstd(z) or 1.0)) * 5)))
-                    H, xedges, zedges = np.histogram2d(x, z, bins=[bins_x, bins_z])
-
-                    fig = plt.figure(figsize=(7, 6), dpi=120)
-                    ax = fig.add_subplot(111)
-                    ax.imshow(H.T, origin="lower", aspect="auto",
-                              extent=[xedges[0], xedges[-1], zedges[0], zedges[-1]])
-                    ax.set_xlabel("X (m)")
-                    ax.set_ylabel("Z (m)")
-                    ax.set_title("2D Heatmap of Positions")
-
-                    name_base = _build_name_base(self.__log_file.name, self.__position)
-                    png_path = self.__results_dir / f"heatmap_2D-{name_base}{('-' + ver) if ver else ''}.png"
-                    fig.tight_layout()
-                    fig.savefig(png_path)
-                    plt.close(fig)
-
-                    # CSV（ビン中心とカウント）
-                    xc = (xedges[:-1] + xedges[1:]) / 2.0
-                    zc = (zedges[:-1] + zedges[1:]) / 2.0
-                    rows = []
-                    for i, xv in enumerate(xc):
-                        for j, zv in enumerate(zc):
-                            rows.append({"x_center": float(xv), "z_center": float(zv), "count": int(H[i, j])})
-                    heat_csv = pd.DataFrame(rows)
-                    csv_path = self.__results_dir / f"heatmap_stats-{name_base}{('-' + ver) if ver else ''}.csv"
-                    heat_csv.to_csv(csv_path, index=False)
-
-                    LOGGER.info(f"Saved heatmap -> {png_path.name}, {csv_path.name}")
-            except Exception as e:
-                LOGGER.warning(f"[2102] Failed to generate heatmap CSV/PNG (non-fatal): {e}")
-
     def export(self, zip_name: str = "YAIBA_Visualizer_output.zip") -> None:
-        """output/ 以下を ZIP 化"""
         zip_path = self.__root / zip_name
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
             for p in self.__output_dir.rglob("*"):
@@ -278,29 +204,24 @@ class LogData:
 # ファイルタイプ判定
 # ----------------------------
 def _detect_file_type(path: Path) -> str:
-    """'vrchat_txt' | 'yaiba_csv' | 'yaiba_json'"""
     ext = path.suffix.lower()
     if ext in [".csv"]:
         return "yaiba_csv"
     if ext in [".json", ".jsonl"]:
         return "yaiba_json"
-    # .txt / .log は中身で判定
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         head = f.read(4000)
     if "[Player Position]" in head or "OnPlayerLeft" in head or "OnPlayerJoinComplete" in head:
         return "vrchat_txt"
-    # YAIBA JSONL を .txt に書いたケース
     try:
         j = json.loads(head.splitlines()[0])
         if isinstance(j, dict) and "type_id" in j:
             return "yaiba_json"
     except Exception:
         pass
-    # YAIBA CSV を .txt に書いたケース
     if "timestamp,player_id,player_name" in head:
         return "yaiba_csv"
     return "vrchat_txt"
-
 
 # ----------------------------
 # VRChat 生ログパーサ
@@ -313,13 +234,6 @@ _POS_RE = re.compile(
 )
 
 def _parse_vrchat_txt(path: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    VRChat生ログ -> position, attendance
-    position列: second(UTC naive), user_id(int), user_name(str),
-                location_x,location_y,location_z, rotation_1,rotation_2,rotation_3,
-                location_dx,location_dy,location_dz, is_vr(bool), event_day(date), is_error(bool)
-    attendance列: second(UTC naive), action('join'|'left'), user_id(int), user_name(str), is_error(bool)
-    """
     rows_pos: List[dict] = []
     rows_att: List[dict] = []
     name_to_uid: Dict[str, int] = {}
@@ -335,7 +249,6 @@ def _parse_vrchat_txt(path: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
             line = line.rstrip("\n")
-            # attendance
             m = _JOIN_LEFT_RE.match(line)
             if m:
                 dt = _to_datetime_utc(m.group("dt"))
@@ -359,16 +272,13 @@ def _parse_vrchat_txt(path: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
                     })
                 continue
 
-            # position
             m2 = _POS_RE.match(line)
             if m2:
                 dt = _to_datetime_utc(m2.group("dt"))
                 csv_payload = m2.group("csv")
-                # 一行CSV（ID, "名前", x, y, z, r1, r2, r3, dx, dy, dz, isVR）
                 try:
                     for row in csv.reader([csv_payload]):
                         row = [c.strip() for c in row]
-                        # 可変長に備える（dx/dy/dz や isVR 欠落ケース対応）
                         pid = _ensure_int(row[0]) if len(row) > 0 else None
                         name = row[1].strip('"') if len(row) > 1 else ""
                         x = _ensure_float(row[2]) if len(row) > 2 else np.nan
@@ -411,25 +321,21 @@ def _parse_vrchat_txt(path: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
 # ----------------------------
 def _parse_yaiba_csv(path: Path) -> Tuple[pd.DataFrame, Optional[pd.DataFrame]]:
     df = pd.read_csv(path)
-    # 期待列: timestamp, player_id, player_name, location_x,y,z, rotation_1,2,3, location_dx,dy,dz, is_vr
     rename = {"timestamp": "second", "player_id": "user_id", "player_name": "user_name"}
     df = df.rename(columns=rename)
-    # second: Naive datetime として扱う（設計書の time_sync で補正） 
     if not np.issubdtype(df["second"].dtype, np.datetime64):
         df["second"] = pd.to_datetime(df["second"], errors="coerce")
-    # 位置/回転/変位の型整形
     for c in ["location_x","location_y","location_z","rotation_1","rotation_2","rotation_3",
               "location_dx","location_dy","location_dz"]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
     if "is_vr" in df.columns:
-        df["is_vr"] = df["is_vr"].astype(bool, errors="ignore") if hasattr(pd.Series, "astype") else df["is_vr"]
+        df["is_vr"] = df["is_vr"].astype("boolean")
     df["is_error"] = df.isna().any(axis=1)
-    attendance = None  # CSV には参加/離脱イベントが無い前提
+    attendance = None
     return df, attendance
 
 def _parse_yaiba_json(path: Path) -> Tuple[pd.DataFrame, Optional[pd.DataFrame]]:
-    """JSON Lines: 各行に type_id で 'yaiba/player_position', 'yaiba/player_join', 'yaiba/player_left' 等"""
     rows_pos, rows_att = [], []
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
@@ -471,7 +377,6 @@ def _parse_yaiba_json(path: Path) -> Tuple[pd.DataFrame, Optional[pd.DataFrame]]
     att = pd.DataFrame(rows_att) if rows_att else None
     return pos, att
 
-
 # ----------------------------
 # 加工（匿名化、time_sync、リサンプリング等）
 # ----------------------------
@@ -503,9 +408,6 @@ def _apply_time_sync(df: Optional[pd.DataFrame], time_sync: Optional[datetime]) 
     return df
 
 def _resample_positions(df: pd.DataFrame, span: int) -> pd.DataFrame:
-    """
-    span 秒ごとに各 user_id でリサンプリング。位置は最後観測値、回転も最後、dx/dy/dz は差分で再計算。
-    """
     if df is None or df.empty or span <= 1:
         return df
     req_cols = ["second","user_id","location_x","location_y","location_z",
@@ -514,12 +416,10 @@ def _resample_positions(df: pd.DataFrame, span: int) -> pd.DataFrame:
         if c not in df.columns:
             df[c] = np.nan
 
-    # 1) 秒に丸め
     g = df.copy()
     g["second"] = pd.to_datetime(g["second"])
     g = g.dropna(subset=["second","user_id"])
     g["second"] = g["second"].dt.floor(f"{span}S")
-    # 最後観測値を採用
     g = g.sort_values(["user_id","second"])
     agg_last = {
         "location_x":"last","location_y":"last","location_z":"last",
@@ -527,18 +427,14 @@ def _resample_positions(df: pd.DataFrame, span: int) -> pd.DataFrame:
         "user_name":"last","is_vr":"last","is_error":"max"
     }
     g2 = g.groupby(["user_id","second"], as_index=False).agg(agg_last)
-
-    # 2) 変位を再計算（同一 user 内で前行との差）
     g2 = g2.sort_values(["user_id","second"])
     for ax in ["x","y","z"]:
         g2[f"location_d{ax}"] = g2.groupby("user_id")[f"location_{ax}"].diff()
-    # 3) event_day
     g2["event_day"] = _event_day_jst(pd.to_datetime(g2["second"]))
     return g2
 
 
 def _finalize_frames(pos: pd.DataFrame, att: Optional[pd.DataFrame]) -> Tuple[pd.DataFrame, Optional[pd.DataFrame]]:
-    # 型整形/列順
     if pos is None or pos.empty:
         pos = pd.DataFrame(columns=[
             "second","user_id","user_name",
@@ -548,11 +444,9 @@ def _finalize_frames(pos: pd.DataFrame, att: Optional[pd.DataFrame]) -> Tuple[pd
             "is_vr","event_day","is_error"
         ])
     else:
-        # 型
         pos["second"] = pd.to_datetime(pos["second"], errors="coerce")
-        for c in ["user_id"]:
-            if c in pos.columns:
-                pos[c] = pd.to_numeric(pos[c], errors="coerce").astype("Int64")
+        if "user_id" in pos.columns:
+            pos["user_id"] = pd.to_numeric(pos["user_id"], errors="coerce").astype("Int64")
         for c in ["location_x","location_y","location_z",
                   "rotation_1","rotation_2","rotation_3",
                   "location_dx","location_dy","location_dz"]:
@@ -564,8 +458,6 @@ def _finalize_frames(pos: pd.DataFrame, att: Optional[pd.DataFrame]) -> Tuple[pd
             pos["event_day"] = _event_day_jst(pos["second"])
         if "is_error" not in pos.columns:
             pos["is_error"] = pos.isna().any(axis=1)
-
-        # 列順を固定
         cols = ["second","user_id","user_name",
                 "location_x","location_y","location_z",
                 "rotation_1","rotation_2","rotation_3",
@@ -598,11 +490,8 @@ def load(
 ) -> LogData:
     """
     設計書仕様の load
-      - 引数検証（存在/型）
-      - 入力ファイル種別判定
-      - フォーマットに応じたパース
-      - 匿名化、time_sync 補正、リサンプリング
-      - LogData を返す
+      - ローカル入力ファイルは削除しない
+      - YAIBA_data/input 配下はクリーンアップして空にする
     """
     p = Path(log_file)
     if not p.exists():
@@ -625,23 +514,16 @@ def load(
         else:
             pos, att = _parse_vrchat_txt(p)
 
-        # 匿名化
         pos = _apply_anonymize(pos, is_pseudo)
         if att is not None:
             att = _apply_anonymize(att, is_pseudo)
-
-        # time_sync 補正
         pos = _apply_time_sync(pos, time_sync)
         if att is not None:
             att = _apply_time_sync(att, time_sync)
-
-        # リサンプリング
         pos = _resample_positions(pos, span)
-
-        # 最終整形
         pos, att = _finalize_frames(pos, att)
 
-        return LogData(
+        logdata = LogData(
             log_file=log_file,
             span=span,
             is_pseudo=is_pseudo,
@@ -649,6 +531,23 @@ def load(
             position=pos,
             attendance=att
         )
+
+        # ====== クリーンアップ（inputのみ）======
+        try:
+            input_dir = DEFAULT_DATA_ROOT / "input"
+            if input_dir.exists():
+                for _child in input_dir.iterdir():
+                    try:
+                        if _child.is_file() or _child.is_symlink():
+                            _child.unlink()
+                        elif _child.is_dir():
+                            shutil.rmtree(_child)
+                    except Exception as e:
+                        LOGGER.warning(f"[2102] input残骸の削除に失敗: {_child} ({e})")
+        except Exception as e:
+            LOGGER.warning(f"[2102] inputディレクトリのクリーンアップに失敗: {e}")
+
+        return logdata
     except ValueError:
         raise
     except Exception as e:
@@ -660,7 +559,6 @@ def load(
 # ----------------------------
 def _build_name_base(input_name: str, df_pos: pd.DataFrame) -> str:
     fname = Path(input_name).stem
-    # event_day（JST）を代表日として先頭レコードから取得
     if df_pos is None or df_pos.empty or "event_day" not in df_pos.columns:
         day = "unknown"
     else:
@@ -670,34 +568,45 @@ def _build_name_base(input_name: str, df_pos: pd.DataFrame) -> str:
 
 
 # ----------------------------
-# 使い方（例）
+# サービス実行エントリポイント
 # ----------------------------
 if __name__ == "__main__":
-    # 例: 実ファイル名をここに
-    log_path = "../../../output_log_2025-09-06_22-55-27.txt"
-    ld = load(log_path, span=1, is_pseudo=True, time_sync=None)
-    ld.save_default_outputs(ver="v1")
-    ld.export()
+    import argparse
 
+    ap = argparse.ArgumentParser(description="YAIBA Loader Service Runner")
+    ap.add_argument("--user-path", required=True, help="入力ログファイルのパス")
+    ap.add_argument("--span", type=int, default=1, help="リサンプリング間隔（秒, default=1）")
+    ap.add_argument("--is-pseudo", action="store_true", default=True, help="匿名化を有効にする（default=True）")
+    ap.add_argument("--no-is-pseudo", dest="is_pseudo", action="store_false", help="匿名化を無効にする")
+    ap.add_argument("--time-sync", type=str, default=None,
+                    help="時間同期基準 (例: '2025-09-06 22:55:27')")
+    args = ap.parse_args()
 
-# === 検証: position / attendance を CSV に保存 =========================
-# 保存先: <PROJECT_ROOT>/YAIBA_data/output/valid/
-try:
-    valid_dir = DEFAULT_DATA_ROOT / "output" / "valid"
-except NameError:
-    # 互換: DEFAULT_DATA_ROOT が無い古い配置でもプロジェクト直下に保存
-    valid_dir = Path(__file__).resolve().parents[2].parent / "YAIBA_data" / "output" / "valid"
-valid_dir.mkdir(parents=True, exist_ok=True)
+    # time_sync の変換
+    time_sync_dt = None
+    if args.time_sync:
+        try:
+            time_sync_dt = datetime.strptime(args.time_sync, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            LOGGER.warning("[WARN] time-sync の形式が不正です。無視します。")
 
-ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-pos_csv = valid_dir / f"position_{ts}.csv"
-ld.position.to_csv(pos_csv, index=False, encoding="utf-8-sig")  # Excel互換のためBOM付き
-print(f"[VALID] position -> {pos_csv}")
+    # YAIBA ローダ呼び出し
+    ld = load(
+        log_file=args.user_path,
+        span=args.span,
+        is_pseudo=args.is_pseudo,
+        time_sync=time_sync_dt,
+    )
 
-if ld.attendance is not None and not ld.attendance.empty:
-    att_csv = valid_dir / f"attendance_{ts}.csv"
-    ld.attendance.to_csv(att_csv, index=False, encoding="utf-8-sig")
-    print(f"[VALID] attendance -> {att_csv}")
-else:
-    print("[VALID] attendance は None/empty のため保存スキップ")
-# =====================================================================
+    # === 開発・実装担当向け確認出力 ===
+    print("\n=== Position (head) ===")
+    print(ld.position.head())
+    print(ld.position.info())
+
+    if ld.attendance is not None and not ld.attendance.empty:
+        print("\n=== Attendance (head) ===")
+        print(ld.attendance.head())
+        print(ld.attendance.info())
+    else:
+        print("\n[INFO] attendance は None/empty です")
+
