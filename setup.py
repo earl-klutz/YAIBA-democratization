@@ -1,11 +1,11 @@
+from pathlib import Path
 from setuptools import setup, find_packages
 
-with open("requirements.txt") as f:
-    requirements = f.read().splitlines()
+requirements = Path(__file__).with_name("requirements.txt").read_text().splitlines()
 
 setup(
-    name="yaiba-democratization",
-    version="0.1.0",
+    name="yaiba_bi",
+    version="0.0.0",
     description="Tools for analyzing and visualizing YAIBA VRChat logs",
     author="YAIBA Democratization Project",
     packages=find_packages(where="src"),

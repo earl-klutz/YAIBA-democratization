@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=42", "wheel"]
+requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -30,5 +30,11 @@ classifiers = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/username/YAIBA-democratization"
-"Bug Tracker" = "https://github.com/username/YAIBA-democratization/issues"
+Homepage = "https://github.com/YAIBA-democratization/YAIBA-democratization"
+"Bug Tracker" = "https://github.com/YAIBA-democratization/YAIBA-democratization/issues"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
