@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import List, Optional, Literal, Dict, Any
 
 import os
-import math
 import logging
 
 import numpy as np
@@ -129,7 +128,13 @@ def render_concurrency_png(df_cc: pd.DataFrame, rcfg: RenderConfig) -> str:
         # 折れ線（欠測長大区間は線分断は簡易実装：NaNに分断）
         t = pd.to_datetime(df_cc["t"], errors="coerce")
         y = pd.to_numeric(df_cc["cc"], errors="coerce")
-        ax.plot(t, y, linewidth=1.5, color="#1f77b4")
+        # ギャップ検出: 5 × 代表間隔（中央値）を閾値に線を分断（NaN挿入）
+        dt = t.diff().dt.total_seconds()
+        median_dt = float(np.nanmedian(dt.to_numpy())) if dt.notna().any() else 1.0
+        gap_threshold = 5.0 * max(median_dt, 1.0)
+        y_plot = y.copy()
+        y_plot[dt > gap_threshold] = np.nan
+        ax.plot(t, y_plot, linewidth=1.5, color="#1f77b4")
         ax.set_title("Concurrent users")
         ax.set_xlabel("time")
         ax.set_ylabel("users [count]")
@@ -191,6 +196,11 @@ def render_trajectory2d_png(df_pos: pd.DataFrame, rcfg: RenderConfig, tcfg: Traj
         # NaN は新系列の始まり
         df["break"] = (df["dt"].isna()) | (df["dt"] > gap_threshold)
 
+        # ユーザー別色（by_user）
+        cmap = plt.get_cmap("tab20")
+        user_ids = list(df["user_id"].dropna().unique())
+        user_to_color = {uid: cmap(i % cmap.N) for i, uid in enumerate(user_ids)}
+
         # ユーザー毎に描画
         for user_id, g in df.groupby("user_id"):
             # break で分割
@@ -205,7 +215,19 @@ def render_trajectory2d_png(df_pos: pd.DataFrame, rcfg: RenderConfig, tcfg: Traj
                 seg = g.loc[(g.index >= start_idx) & (g.index < end_idx)]
                 if len(seg) < 2:
                     continue
-                ax.plot(seg["x"], seg["z"], linewidth=1.5, alpha=0.8)
+                color = (
+                    user_to_color.get(user_id)
+                    if tcfg.color_scheme == "by_user"
+                    else "#1f77b4"
+                )
+                ax.plot(
+                    seg["x"],
+                    seg["z"],
+                    linewidth=1.5,
+                    alpha=0.85,
+                    color=color,
+                    solid_capstyle="round",
+                )
             # 始点/終点
             first = g.iloc[0]
             last = g.iloc[-1]
