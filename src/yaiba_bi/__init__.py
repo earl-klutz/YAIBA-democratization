@@ -1,0 +1,1 @@
+from .yaiba_colab_ui import DIRS, setup_dirs
