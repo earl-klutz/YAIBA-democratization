@@ -5,5 +5,5 @@ pyarrow
 PyYAML
 scipy
 pytest
-
+imageio-ffmpeg
 tzdata
