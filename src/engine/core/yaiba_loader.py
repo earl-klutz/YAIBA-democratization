@@ -29,10 +29,12 @@ class LogData:
     """
     def __init__(self, position: pd.DataFrame,
                  attendance: Optional[pd.DataFrame],
-                 area: Area) -> None:
+                 area: Area,
+                 time_span: Optional[int]) -> None:
         self._position = position
         self._attendance = attendance
         self._area = area
+        self._time_span = time_span
 
     # ---- getters ----
     def get_position(self) -> pd.DataFrame:
@@ -43,8 +45,9 @@ class LogData:
 
     def get_area(self) -> Area:
         return self._area
-
-
+    
+    def get_time_span(self) -> Optional[int]:
+        return self._time_span
 
 # ================================
 # Helpers
@@ -124,7 +127,7 @@ def load_session_log(log_file: str):
     return session_log
 
 
-def infer_sec_interval(df_pos: pd.DataFrame) -> int | None:
+def get_time_span(df_pos: pd.DataFrame) -> int | None:
     """
     df_posから秒粒度(sec_interval)を推定する関数
 
@@ -145,7 +148,10 @@ def infer_sec_interval(df_pos: pd.DataFrame) -> int | None:
         # 隣同士の差を計算
         for i in range(1, len(timestamps)):
             diff = timestamps[i] - timestamps[i-1]
+            # group.loc[group.index[i],"diff"] = diff
             all_diffs.append(diff)
+
+        # group.to_csv(f"position{pid}.csv", index=False, encoding="utf-8-sig")
 
     if len(all_diffs) == 0:
         print("差分を計算できませんでした。")
@@ -298,7 +304,7 @@ def build_area(position: pd.DataFrame) -> Area:
 # ================================
 # main
 # ================================
-def main(log_file: str,
+def load(log_file: str,
         sec_interval: int = 1,
         anonymize: bool = True,
         base_time: Optional[datetime] = None) -> LogData:
@@ -310,12 +316,12 @@ def main(log_file: str,
     df_pos, df_event = yaiba2df(session_log,schema_yaiba)
 
     # 秒粒度の推定
-    infer_sec_interval(df_pos)
+    time_span = get_time_span(df_pos)
     df_pos, df_event = GenerateIntermediate(df_pos, df_event,schema_intermediate)
 
     # Areaを算出し、LogDataに格納
     area = build_area(df_pos if not df_pos.empty else None)
-    logdata = LogData(position=df_pos, attendance=df_event, area=area)
+    logdata = LogData(position=df_pos, attendance=df_event, area=area, time_span = time_span)
 
     return logdata
 
@@ -323,10 +329,12 @@ def main(log_file: str,
 if __name__ == "__main__":
     log_file = r"C:\Users\tinyt\Downloads\output.txt"
 
-    logdata = main(log_file, sec_interval=1, anonymize=True, base_time=None)
+    logdata = load(log_file, sec_interval=1, anonymize=True, base_time=None)
     position = logdata.get_position()
     attendance = logdata.get_attendance()
     area = logdata.get_area()
+    time_span = logdata.get_time_span()
+
 
     # 動作確認（必要に応じて保存に置き換え可）
     print("Position (head):")
@@ -334,4 +342,5 @@ if __name__ == "__main__":
     print("\nAttendance (head):")
     print(attendance.head())
     print("\nArea:", area)
+    print("\ntime_span:",time_span)
 
