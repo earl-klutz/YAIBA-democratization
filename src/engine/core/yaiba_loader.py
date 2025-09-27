@@ -76,7 +76,7 @@ schema_intermediate = {
             "second", "user_id", "user_name",
             "location_x", "location_y", "location_z",
             "rotation_1", "rotation_2", "rotation_3",
-            "location_dx", "location_dy", "location_dz",
+            "velocity_x", "velocity_y", "velocity_z",
             "is_vr", "event_day", "is_error"
         ],
         "types": [
@@ -233,9 +233,6 @@ def GenerateIntermediate(df_pos: pd.DataFrame, df_event: pd.DataFrame, schema: d
     rename_map = {
         "player_id": "user_id",
         "pseudo_user_name": "user_name",
-        "velocity_x": "location_dx",
-        "velocity_y": "location_dy",
-        "velocity_z": "location_dz",
         }
 
     if not df_pos.empty and "timestamp" in df_pos.columns:
