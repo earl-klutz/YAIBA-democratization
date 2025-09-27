@@ -150,7 +150,7 @@ def get_time_span(df_pos: pd.DataFrame) -> int | None:
     # 最頻値を算出
         vals, counts = np.unique(all_diffs, return_counts=True)
         mode_sec = vals[np.argmax(counts)]
-        return mode_sec
+        return int(mode_sec)
 
 def _normalize_action(v: str) -> str:
     """attendance用のaction正規化"""
