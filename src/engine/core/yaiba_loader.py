@@ -89,7 +89,7 @@ schema_intermediate = {
     },
     "attendance": {
         "keys": [
-            "second", "action", "user_id",
+            "second", "action", "user_name",
             "is_error"
         ],
         "types": [
@@ -247,7 +247,7 @@ def GenerateIntermediate(df_pos: pd.DataFrame, df_event: pd.DataFrame, schema: d
 
     # --- attendance 側 ---
     rename_map = {
-        "pseudo_user_name": "user_id",
+        "pseudo_user_name": "user_name",
         }
     if not df_event.empty and "timestamp" in df_event.columns:
         df_event["second"] = pd.to_datetime(df_event["timestamp"], unit="s")
