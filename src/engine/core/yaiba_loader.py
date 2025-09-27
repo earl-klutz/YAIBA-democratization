@@ -20,13 +20,7 @@ class Area:
     z_max: float
 
 class LogData:
-    """
-    標準化済みログの入れ物。
-      - position: DataFrame
-      - attendance: Optional[DataFrame]
-      - area: Area
-    値はプライベートに保持し、getter経由でアクセスする。
-    """
+
     def __init__(self, position: pd.DataFrame,
                  attendance: Optional[pd.DataFrame],
                  area: Area,
@@ -129,11 +123,7 @@ def load_session_log(log_file: str):
 
 def get_time_span(df_pos: pd.DataFrame) -> int | None:
     """
-    df_posから秒粒度(sec_interval)を推定する関数
-
-    - player_idごとにtimestampを並べて、その差を調べる
-    - もしすべての差が同じ整数ならその値を返す
-    - そうでなければ None を返す
+    df_posから秒粒度を推定
     """
 
     # すべての差を集めるリスト
@@ -144,29 +134,23 @@ def get_time_span(df_pos: pd.DataFrame) -> int | None:
         # timestampで並べ替え
         group = group.sort_values("timestamp")
         timestamps = group["timestamp"].tolist()
+        samples = len(timestamps)//10
 
         # 隣同士の差を計算
-        for i in range(1, len(timestamps)):
+        for i in range(1, samples):
             diff = timestamps[i] - timestamps[i-1]
-            # group.loc[group.index[i],"diff"] = diff
             all_diffs.append(diff)
 
-        # group.to_csv(f"position{pid}.csv", index=False, encoding="utf-8-sig")
+        break
 
     if len(all_diffs) == 0:
         print("差分を計算できませんでした。")
         return None
-
-    # 一意の値かどうか確認
-    unique_vals = set(all_diffs)
-    if len(unique_vals) == 1:
-        sec = unique_vals.pop()
-        print(f"秒粒度は {sec} 秒です。")
-        return sec
     else:
-        print("秒粒度が一意に定まりません。")
-        print("候補:", unique_vals)
-        return None
+    # 最頻値を算出
+        vals, counts = np.unique(all_diffs, return_counts=True)
+        mode_sec = vals[np.argmax(counts)]
+        return mode_sec
 
 def _normalize_action(v: str) -> str:
     """attendance用のaction正規化"""
@@ -302,7 +286,7 @@ def build_area(position: pd.DataFrame) -> Area:
 
 
 # ================================
-# main
+# A工程メイン関数
 # ================================
 def load(log_file: str,
         sec_interval: int = 1,
