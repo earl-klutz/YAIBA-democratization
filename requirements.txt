@@ -6,3 +6,4 @@ PyYAML
 scipy
 pytest
 imageio-ffmpeg
+tzdata
