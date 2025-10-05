@@ -12,8 +12,10 @@ import pytz
 from .spec_errors import SpecError
 
 
-RESULT_ROOT = Path("/content/YAIBA_data/output/results")
-META_ROOT = Path("/content/YAIBA_data/output/meta")
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+OUTPUT_BASE = PROJECT_ROOT / "content" / "YAIBA_data" / "output"
+RESULT_ROOT = OUTPUT_BASE / "results"
+META_ROOT = OUTPUT_BASE / "meta"
 
 
 @dataclass
