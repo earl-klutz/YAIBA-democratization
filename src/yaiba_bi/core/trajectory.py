@@ -116,8 +116,20 @@ class TrajectoryPlotter:
         )
         try:
             ax.set_facecolor("white")
-            ax.set_xlim(self.area["min_x"], self.area["max_x"])
-            ax.set_ylim(self.area["min_z"], self.area["max_z"])
+            x_min = float(self.area["min_x"])
+            x_max = float(self.area["max_x"])
+            z_min = float(self.area["min_z"])
+            z_max = float(self.area["max_z"])
+            if x_min == x_max:
+                pad = max(1.0, abs(x_min) * 0.05 or 1.0)
+                x_min -= pad
+                x_max += pad
+            if z_min == z_max:
+                pad = max(1.0, abs(z_min) * 0.05 or 1.0)
+                z_min -= pad
+                z_max += pad
+            ax.set_xlim(x_min, x_max)
+            ax.set_ylim(z_min, z_max)
             ax.set_aspect("equal")
             colors = self._color_cycle({seg["user_id"].iloc[0] for seg in segments})
             for segment in segments:
