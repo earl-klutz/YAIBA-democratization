@@ -1,6 +1,3 @@
-"""YAIBA BI可視化モジュールのトップレベルパッケージ。"""
+from __future__ import annotations
 
 __all__ = ["core"]
-
-
-__version__ = "0.0.0"
