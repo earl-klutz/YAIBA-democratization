@@ -6,9 +6,14 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
 
 import matplotlib.pyplot as plt
+# TODO: japanize_matplotlibを使用しないようにする
 import japanize_matplotlib
 import numpy as np
 import pandas as pd
+import matplotlib.dates as mdates
+
+import pytz
+from pandas.tseries.offsets import DateOffset
 
 __all__ = [
     "SpecError",
@@ -226,7 +231,7 @@ class EventLogVisualizer:
         if not required.issubset(df_att.columns):
             raise SpecError(-2101, "attendance に必須列 second/action が存在しません")
         df_att = df_att.copy()
-        df_att["second"] = pd.to_datetime(df_att["second"])
+        df_att["second"] = pd.to_datetime(df_att["second"], utc=True)
         df_att = df_att.sort_values("second")
         action_map = {"join": 1, "left": -1}
         df_att["delta"] = df_att["action"].map(action_map)
@@ -234,7 +239,8 @@ class EventLogVisualizer:
         events = df_att.groupby("second")["delta"].sum().sort_index()
         if events.empty:
             raise SpecError(-2101, "attendance から同時接続数を構成できません")
-        timeline = events.reindex(pd.date_range(events.index.min(), events.index.max(), freq="s"), fill_value=0.0)
+        # timeline index: UTC
+        timeline = events.reindex(pd.date_range(events.index.min(), events.index.max(), freq="s", tz="UTC"), fill_value=0.0)
         cc_series = timeline.cumsum().astype(float)
         df_cc = pd.DataFrame({"second": timeline.index, "cc": cc_series})
         return df_cc
@@ -281,10 +287,33 @@ class EventLogVisualizer:
         time_col = "t" if "t" in df_cc.columns else "second"
         if time_col not in df_cc.columns:
             raise SpecError(-2101, "cc データに時間列が存在しません")
-        ax.plot(df_cc[time_col], df_cc["cc"], linewidth=1.5, color="#1f77b4")
-        ax.set_xlabel("時間")
+
+        # JSTタイムゾーン
+        JST = pytz.timezone("Asia/Tokyo")
+
+        # x軸の時刻を mm-dd HH:mm で表示するように設定
+        # 入力はUTCなのでJSTに変換
+        x = df_cc[time_col]
+        if pd.api.types.is_datetime64_any_dtype(x):
+            # UTC→JST
+            if x.dt.tz is None:
+                x = x.dt.tz_localize("UTC").dt.tz_convert(JST)
+            else:
+                x = x.dt.tz_convert(JST)
+        else:
+            # 文字列や数値の場合は一度datetimeに変換
+            x = pd.to_datetime(x, utc=True).dt.tz_convert(JST)
+
+        ax.plot(x, df_cc["cc"], linewidth=1.5, color="#1f77b4")
+        ax.set_xlabel("時間 (JST)")
         ax.set_ylabel("同時接続数")
         ax.grid(True, linestyle="--", alpha=0.3)
+
+        # x軸のフォーマットを mm-dd HH:mm (JST) に
+        locator = mdates.AutoDateLocator()
+        formatter = mdates.DateFormatter("%m-%d %H:%M", tz=JST)
+        ax.xaxis.set_major_locator(locator)
+        ax.xaxis.set_major_formatter(formatter)
 
         fig.autofmt_xdate()
         fig.tight_layout()
@@ -343,7 +372,12 @@ class EventLogVisualizer:
         if time_col not in df.columns:
             raise SpecError(-2101, "軌跡データに時間列が存在しません")
         df_sorted = df.sort_values(time_col)
-        times = df_sorted[time_col].astype("int64") / 1e9
+        times = df_sorted[time_col]
+        # UTC→JST変換は不要（breaksは時差に影響されない）
+        if pd.api.types.is_datetime64_any_dtype(times):
+            times = times.astype("int64") / 1e9
+        else:
+            times = pd.to_datetime(times, utc=True).astype("int64") / 1e9
         diffs = np.diff(times)
         if len(diffs) == 0:
             return [df_sorted]
@@ -389,7 +423,8 @@ class EventLogVisualizer:
             missing = required - set(df_pos.columns)
             raise SpecError(-2101, f"df_pos に必須列 {sorted(missing)} が存在しません")
         df_pos = df_pos.copy()
-        df_pos["second"] = pd.to_datetime(df_pos["second"])
+        # 入力はUTCなのでJSTに変換
+        df_pos["second"] = pd.to_datetime(df_pos["second"], utc=True).dt.tz_convert("Asia/Tokyo")
         df_pos = self._filter_users(df_pos)
         if df_pos.empty:
             raise SpecError(-2101, "df_pos が空です")
