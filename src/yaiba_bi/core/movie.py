@@ -11,12 +11,12 @@ import pandas as pd
 
 import matplotlib
 matplotlib.use("Agg")
-from matplotlib import rcParams
-rcParams["font.family"] = "Meiryo"  # Windowsで日本語グリフ
-rcParams["axes.unicode_minus"] = False
-
 import matplotlib.pyplot as plt
+from .fontconfig import setup_fonts
+setup_fonts()
 import matplotlib.animation as animation
+
+
 from tqdm import tqdm
 
 from .logging_util import get_logger, log_summary
@@ -44,10 +44,17 @@ class Theme:
 
 @dataclass
 class MovieParams:
+    # duration_real: int = 10800   # [sec] 解析対象上限
+    # format: str = "mp4"
+    # fps: int = 30
+    # duration_sec: int = 60
+
     duration_real: int = 10800   # [sec] 解析対象上限
     format: str = "mp4"
-    fps: int = 30
-    duration_sec: int = 60
+    fps: int = 30                 # ← ここは 30 固定で使う
+    duration_sec: int | None = None  # ← None/<=0 なら自動決定
+    auto_min_sec: int = 10           # ← 自動時の最小尺
+    auto_max_sec: int = 120           # ← 自動時の最大尺
     # bitrate は後方互換で解決（int/str/bitrate_kbps を許容）
     bitrate: int | str = 2000
 
@@ -66,6 +73,8 @@ class TrailParams:
 class IOParams:
     output_filename: str = "movie"
     overwrite: bool = False
+
+MovieIOParams = IOParams
 
 def _resolve_bitrate_kbps(movie: MovieParams) -> int:
     val = getattr(movie, "bitrate_kbps", None)
@@ -161,12 +170,12 @@ class MovieGenerator:
         t0 = df["sec_floor"].min()
         tmax = df["sec_floor"].max()
         real_span = min((tmax - t0).total_seconds(), self.movie.duration_real)
-        compress = real_span / self.movie.duration_sec
-        step_sec = max(1, int(round(compress / self.movie.fps)))
-        total_frames = int(math.ceil(self.movie.duration_sec * self.movie.fps))
+        dur = getattr(self, "_duration_sec_eff", None) or self.movie.duration_sec or self.movie.auto_min_sec
+        total_frames = max(1, int(round(dur * self.movie.fps)))
+        sec_per_frame = (real_span / (total_frames - 1)) if total_frames > 1 else 0.0
 
         by_sec: Dict[pd.Timestamp, pd.DataFrame] = dict(tuple(df.groupby("sec_floor")))
-        trail_frames: int = max(1, int(math.ceil(self.trail.length_real_seconds / step_sec)))
+        trail_frames: int = max(1, int(math.ceil(self.trail.length_real_seconds / max(1e-9, sec_per_frame))))
         trail_buf: Deque[pd.DataFrame] = deque(maxlen=trail_frames)
 
         dpi = 120
@@ -181,12 +190,27 @@ class MovieGenerator:
         curr = ax.scatter([], [], s=self.point.radius_px**2, alpha=self.point.alpha)
         trail_sc = ax.scatter([], [], s=(self.point.radius_px * 0.35) ** 2)
 
-        times = [t0 + pd.Timedelta(seconds=i * step_sec) for i in range(total_frames)]
-        times = [min(pd.Timestamp(times[i]), tmax) for i in range(len(times))]
+        times = []
+        # t0→t0+real_span を total_frames 等分（小数秒）。clamp で tmax を超えない
+        times: list[pd.Timestamp] = []
+        for i in range(total_frames):
+            ti = t0 if total_frames == 1 else t0 + pd.to_timedelta(i * sec_per_frame, unit="s")
+            times.append(min(ti, tmax))
 
         def _frame(i: int):
             ts = times[i].floor("s")
-            df_now = by_sec.get(ts, pd.DataFrame(columns=["user_id", "location_x", "location_z"]))
+        def _frame(ts):
+            # Matplotlib から渡される frame を「時刻」として扱う
+            # 念のため秒丸め（小文字 "s"）
+            ts = pd.Timestamp(ts).floor("s")
+
+            # 秒ごとのデータを取得（なければ空DF）
+            df_now = by_sec.get(ts)
+            if df_now is None:
+                df_now = pd.DataFrame(columns=["user_id", "location_x", "location_z"])
+
+            if df_now is None:
+                df_now = pd.DataFrame(columns=["user_id", "location_x", "location_z"])
             trail_buf.append(df_now)
 
             if not df_now.empty:
@@ -212,11 +236,28 @@ class MovieGenerator:
                 trail_sc.set_offsets(np.empty((0, 2))); trail_sc.set_facecolors([])
 
             tlabel.set_text(ts.tz_convert("Asia/Tokyo").strftime("%Y-%m-%d %H:%M:%S JST"))
+            # tz-naive の場合でも安全に JST 表示
+            ts_jst = ts.tz_convert("Asia/Tokyo") if ts.tzinfo else ts.tz_localize("UTC").tz_convert("Asia/Tokyo")
+            tlabel.set_text(ts_jst.strftime("%Y-%m-%d %H:%M:%S JST"))
             return curr, trail_sc, title, tlabel
 
-        anim = animation.FuncAnimation(fig, _frame, frames=total_frames, interval=1000/self.movie.fps, blit=False, cache_frame_data=False)
-        logger.info(f"frame_plan frames={total_frames} step_sec={step_sec} compress={compress:.3f}")
-        return anim, {"frames": total_frames}
+        # フレーム列として「時刻リスト」を渡すことで IndexError を根絶
+        anim = animation.FuncAnimation(
+            fig, _frame, frames=times, interval=1000 / self.movie.fps,
+            blit=False, cache_frame_data=False
+        )
+        info = {
+            "frames": total_frames,
+            "sec_per_frame": round(sec_per_frame, 6),
+            "t0_jst": str(t0),
+            "tmax_jst": str(tmax),
+            "xlim": (xmn, xmx),
+            "zlim": (zmn, zmx),
+        }
+        logger.info(
+            f"frame_plan frames={total_frames} sec_per_frame={sec_per_frame:.6f} real_span={real_span:.3f}s"
+        )
+        return anim, info
 
     # --- 保存（tqdm進捗・fps間引き） ---
     def save_mp4(self, anim: animation.FuncAnimation, out_path: str, logger: logging.Logger) -> str:
@@ -264,9 +305,25 @@ class MovieGenerator:
         tracemalloc.start(); snap0 = tracemalloc.take_snapshot()
         try:
             df_prep = self.prepare(df, logger)
+            # --- 素材長から動画尺を自動決定（必要な場合） ---
+            # 実長（解析窓に制限済み）を算出
+            t0 = df_prep["sec_floor"].min()
+            tmax = df_prep["sec_floor"].max()
+            real_span = min((tmax - t0).total_seconds(), self.movie.duration_real)
+            # duration_sec が未指定/無効なら自動決定
+            if not self.movie.duration_sec or self.movie.duration_sec <= 0:
+                # 長すぎる素材は auto_max_sec に圧縮、短い素材は auto_min_sec を確保
+                # 例: real_span=3600s → duration=60s（タイムラプス圧縮）
+                #     real_span=6s    → duration=10s（最低尺を確保）
+                target = max(self.movie.auto_min_sec,
+                             min(self.movie.auto_max_sec, int(round(real_span))))
+                self._duration_sec_eff = target
+            else:
+                self._duration_sec_eff = int(self.movie.duration_sec)
+
             basename = output_basename or build_basename(
                 event_day=self._event_day_str, filename=self.io.output_filename, dt=dt_jst,
-                ver=self.ver, duration=self.movie.duration_sec
+                ver=self.ver, duration=self._duration_sec_eff  # ← 有効な動画尺で命名
             )
             out_path = result_path("movie", basename)
             if (not self.io.overwrite) and os.path.exists(out_path):

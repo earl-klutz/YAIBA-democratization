@@ -1,8 +1,26 @@
 from __future__ import annotations
-import os, gc, logging, tracemalloc
+"""
+YAIBA 可視化: 滞在時間（在室時間）ヒストグラム — 設計準拠 完全版
+
+要点:
+- 仕様に合わせ run(self, df, output_basename: str) -> dict を提供
+- 出力先は <YAIBA_RESULTS_DIR>/histograms（未設定時は /content/YAIBA_data/output/results/histograms）
+- 既存 demo.py 互換: HistParams(dpi, width, height) / IOParams(overwrite) / ver="v1" などを受理
+- 集計はユーザ別の在室秒数（unique sec_floor）→ 分に変換してヒスト化
+- ラッパー関数 run_histogram_mvp(...) も提供（output_basename 未指定なら IOParams.output_filename）
+
+依存: matplotlib, numpy, pandas（任意: pyarrow で Parquet 読取）
+"""
+import os
+import gc
+import json
+import math
+import logging
+import tracemalloc
 from dataclasses import dataclass
-from typing import Optional, Dict
 from datetime import datetime
+from pathlib import Path
+from typing import Optional, Dict, Tuple, Union
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -10,197 +28,286 @@ import pandas as pd
 
 import matplotlib
 matplotlib.use("Agg")
-from matplotlib import rcParams
-rcParams["font.family"] = "Meiryo"
-rcParams["axes.unicode_minus"] = False
-
 import matplotlib.pyplot as plt
 
-from .logging_util import get_logger, log_summary
-from .naming import build_basename, result_path, meta_paths
-from .validation import (
-    PipelineError,  # EC を伴う例外
-    require_columns, drop_invalid_types, enforce_min_seconds
-)
-
-# ---- エラーコード（抜粋） ----
-EC_STATS_UNKNOWN = -2400
-EC_STORAGE_DST_INVALID = -2701
+# ====== エラーコード（抜粋） ======
 EC_STORAGE_PERM = -2702
-EC_STORAGE_IO = -2704
+EC_STORAGE_IO   = -2704
+EC_STATS_INPUT  = -2301
+EC_STATS_EMPTY  = -2302
+EC_STATS_UNKNOWN= -2399
 
-TZ_JST = ZoneInfo("Asia/Tokyo")
+JST = ZoneInfo("Asia/Tokyo")
+
+# ====== パラメータ定義 ======
+@dataclass
+class IOParams:
+    # out_dir を未指定(None)なら、設計書既定の <YAIBA_RESULTS_DIR>/histograms を用いる
+    out_dir: Optional[str] = None
+    output_filename: str = "hist_dwell"  # 出力ベース名（ラッパーで未指定時に使用）
+    png_dpi: int = 144
+    csv_encoding: str = "utf-8"
+    overwrite: bool = False  # 将来拡張用（現状は上書き保存の既定挙動のまま）
+HistIOParams = IOParams
 
 @dataclass
 class HistParams:
-    bins: int | str = "fd"       # Freedman–Diaconis / "auto" / 明示個数
-    range_min: Optional[int] = None
-    range_max: Optional[int] = None
-    dpi: int = 120
-    width: int = 960
-    height: int = 720
+    # demo.py 互換パラメータ
+    bins: Optional[int] = None        # None→matplotlib の "auto"
+    dpi: Optional[int] = None         # fig.set_dpi / savefig の優先候補
+    width: Optional[float] = None     # dpi 指定時は px、未指定時は inch
+    height: Optional[float] = None    # 上に同じ
+
+    # 直接指定系
+    figsize: Tuple[float, float] = (10, 6)  # width/height があれば上書き
+    edgecolor: str = "black"
+    title: str = "YAIBA: 滞在時間の分布（JST, 1秒分解能）"
+    x_label: str = "在室時間 [minutes]"
+    y_label: str = "人数 [counts]"
 
 @dataclass
-class IOParams:
-    output_filename: str = "hist"
-    overwrite: bool = False
+class VerParams:
+    version: str = "v1"
 
+__all__ = [
+    "IOParams", "HistParams", "VerParams",
+    "HistogramGenerator", "run_histogram_mvp"
+]
+
+# ====== ユーティリティ ======
+REQUIRED_COLS = {"user_id", "second"}
+
+
+def require_columns(df: pd.DataFrame):
+    missing = REQUIRED_COLS - set(df.columns)
+    if missing:
+        raise ValueError(f"missing columns: {sorted(missing)}")
+
+
+def _default_hist_out_dir() -> str:
+    # 設計書準拠: YAIBA_RESULTS_DIR（未設定時は固定）/histograms
+    base = Path(os.getenv("YAIBA_RESULTS_DIR", "/content/YAIBA_data/output/results"))
+    return str(base / "histograms")
+
+
+def build_paths(io: IOParams, base: str) -> Tuple[str, str]:
+    out_dir = io.out_dir or _default_hist_out_dir()
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+    png_path = str(Path(out_dir) / f"{base}.png")
+    csv_path = str(Path(out_dir) / f"{base}.csv")
+    return png_path, csv_path
+
+
+def to_jst_floor_seconds(df: pd.DataFrame, logger: logging.Logger) -> pd.DataFrame:
+    """second列をJSTに正規化し、sec_floor(秒床)を付与。重複(user_id×sec_floor)は後勝ち1件。
+    返却: [second(JST), sec_floor(JST), user_id, event_day(YYYY-MM-DD)]
+    """
+    df = df.copy()
+    sec = pd.to_datetime(df["second"], errors="coerce")
+    if sec.dt.tz is None:
+        sec = sec.dt.tz_localize(JST)
+    else:
+        sec = sec.dt.tz_convert(JST)
+    df["second"] = sec
+
+    df = df.sort_values(["second", "user_id"])  # 後勝ち安定ソート
+    df["sec_floor"] = df["second"].dt.floor("s")
+    df = df.drop_duplicates(subset=["sec_floor", "user_id"], keep="last")
+
+    if "event_day" not in df.columns:
+        df["event_day"] = df["sec_floor"].dt.date.astype(str)
+    return df
+
+
+def log_summary(logger: logging.Logger, stats: Dict):
+    logger.info("SUMMARY " + json.dumps(stats, ensure_ascii=False))
+
+# ====== 本体 ======
 class HistogramGenerator:
-    """
-    同時接続数（秒単位）の分布をヒストグラム化し、PNGとCSVを出力する。
-    - 入力 second は JST（tz-aware/naive どちらでも可。内部で正規化）
-    - 必須列: second, user_id, location_x, location_y, location_z, event_day
-    """
-    def __init__(
-        self,
-        hist: HistParams = HistParams(),
-        io: IOParams = IOParams(),
-        ver: str = "c1.0",
-    ) -> None:
-        self.hist = hist
+    """滞在時間ヒストグラムを生成するクラス（設計準拠）。"""
+    def __init__(self, io: IOParams, hist: HistParams, ver: Union[VerParams, str, None]):
         self.io = io
-        self.ver = ver
+        self.hist = hist
+        # ver は VerParams / str / None / dict いずれも許容
+        if isinstance(ver, VerParams):
+            self.ver = ver
+        elif isinstance(ver, str) or ver is None:
+            self.ver = VerParams(version=(ver or "v1"))
+        elif isinstance(ver, dict):
+            self.ver = VerParams(**ver)
+        else:
+            self.ver = VerParams()
+        self.logger = logging.getLogger("yaiba_bi.core.histogram")
 
-    # --------- 前処理 & 同時接続数算出 ----------
-    def compute_concurrency(self, df: pd.DataFrame, logger: logging.Logger) -> pd.DataFrame:
+    # --- 在室時間サマリ作成 ---
+    def compute_dwell_summary(self, df: pd.DataFrame) -> pd.DataFrame:
+        """ユーザ別の在室秒/分サマリ DataFrame を返す。
+        入力: 必須列 user_id, second（任意: event_day）
+        出力列: user_id, dwell_seconds, dwell_minutes, event_day
+        """
         require_columns(df)
-        df = drop_invalid_types(df, logger)  # second→JST正規化、数値型整備、欠損drop
+        dfj = to_jst_floor_seconds(df, self.logger)
 
-        # 秒丸め（"s"：小文字）後、同一秒×同一ユーザの重複は後勝ちで1件に
-        df = df.sort_values(["second", "user_id"])
-        df["sec_floor"] = df["second"].dt.floor("s")
-        df = df.drop_duplicates(subset=["sec_floor", "user_id"], keep="last")
+        dwell_sec = dfj.groupby("user_id")["sec_floor"].nunique().rename("dwell_seconds")
+        out = dwell_sec.to_frame()
+        out["dwell_minutes"] = out["dwell_seconds"] / 60.0
 
-        # 最低 180 秒は確保（設計の動画要件と整合。短すぎる分布は品質担保のため拒否）
-        enforce_min_seconds(df, 180)
+        # 代表 event_day を選定（ユーザ×日で出現数が最大の日）
+        by_user_day = dfj.groupby(["user_id", "event_day"]).size().rename("cnt").reset_index()
+        rep = by_user_day.loc[by_user_day.groupby("user_id")["cnt"].idxmax(), ["user_id", "event_day"]]
+        out = out.merge(rep, on="user_id", how="left")
+        return out.reset_index()[["user_id", "dwell_seconds", "dwell_minutes", "event_day"]]
 
-        # 1秒ごとの同時接続数
-        s = (
-            df.groupby("sec_floor")["user_id"]
-              .nunique()
-              .rename("concurrency")
-              .reset_index()
-        )
-        # event_day（命名用）をJST最頻日から決定
+    # --- 描画 ---
+    def draw_histogram(self, data: np.ndarray) -> Tuple[plt.Figure, plt.Axes, Dict[str, float]]:
+        # figsize 決定：width/height があれば優先
+        if self.hist.width and self.hist.height:
+            if self.hist.dpi:  # px 指定として inch へ変換
+                figsize = (float(self.hist.width) / float(self.hist.dpi),
+                           float(self.hist.height) / float(self.hist.dpi))
+            else:              # inch 指定
+                figsize = (float(self.hist.width), float(self.hist.height))
+        else:
+            figsize = self.hist.figsize
+
+        fig, ax = plt.subplots(figsize=figsize)
+        if self.hist.dpi:
+            try:
+                fig.set_dpi(int(self.hist.dpi))
+            except Exception:
+                pass
+
+        bins = self.hist.bins if self.hist.bins is not None else "auto"
+        ax.hist(data, bins=bins, edgecolor=self.hist.edgecolor)
+        ax.set_xlabel(self.hist.x_label)
+        ax.set_ylabel(self.hist.y_label)
+        ax.set_title(self.hist.title)
+
+        stats = {
+            "mean": float(np.mean(data)) if data.size else float("nan"),
+            "median": float(np.median(data)) if data.size else float("nan"),
+            "p95": float(np.quantile(data, 0.95)) if data.size else float("nan"),
+        }
+        for v, label in [(stats["mean"], "Mean"), (stats["median"], "Median"), (stats["p95"], "P95")]:
+            if not (isinstance(v, float) and math.isnan(v)):
+                ax.axvline(v, linestyle="--")
+                ymax = ax.get_ylim()[1]
+                ax.text(v, ymax * 0.95, label, rotation=90, va="top")
+        return fig, ax, stats
+
+    # --- 実行フロー（設計準拠シグネチャ） ---
+    def run(self, df: pd.DataFrame, output_basename: str) -> Dict:
+        tracemalloc.start()
         try:
-            ed = pd.to_datetime(df["event_day"], errors="coerce")
-            ed = ed.dt.tz_localize("Asia/Tokyo") if getattr(ed.dtype, "tz", None) is None else ed.dt.tz_convert("Asia/Tokyo")
-            mode = pd.Series(pd.to_datetime(ed, errors="coerce")).dt.date.mode()
-            self._event_day_str = str(mode.iat[0]) if not mode.empty else datetime.now(TZ_JST).date().isoformat()
-        except Exception:
-            self._event_day_str = datetime.now(TZ_JST).date().isoformat()
+            if df is None or len(df) == 0:
+                raise ValueError("empty df")
 
-        return s  # columns: [sec_floor, concurrency]
+            self.logger.info("[Dwell] prepare start")
+            df_summary = self.compute_dwell_summary(df)
+            if df_summary.empty:
+                raise ValueError("no dwell data")
 
-    # --------- 描画 ----------
-    def plot_hist(self, conc_df: pd.DataFrame) -> plt.Figure:
-        values = conc_df["concurrency"].to_numpy()
+            data = df_summary["dwell_minutes"].to_numpy()
+            self.logger.info(f"[Dwell] rows={len(df)} users={df_summary.shape[0]}")
 
-        # 指標
-        peak = int(values.max())
-        mean = float(values.mean())
-        median = float(np.median(values))
-        p95 = float(np.percentile(values, 95))
+            fig, ax, stats = self.draw_histogram(data)
 
-        # 図
-        fig_w, fig_h = self.hist.width / self.hist.dpi, self.hist.height / self.hist.dpi
-        fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=self.hist.dpi)
-        fig.patch.set_facecolor("#eeeeee")
-        ax.set_facecolor("white")
+            now_str = datetime.now(JST).strftime("%Y%m%d-%H%M%S")
+            base = f"{output_basename}-{now_str}_{self.ver.version}"
+            png_path, csv_path = build_paths(self.io, base)
 
-        # ヒストレンジ
-        rmin = self.hist.range_min if self.hist.range_min is not None else int(values.min())
-        rmax = self.hist.range_max if self.hist.range_max is not None else int(values.max())
+            save_dpi = self.io.png_dpi or self.hist.dpi or 144
+            fig.savefig(png_path, dpi=save_dpi, bbox_inches="tight")
+            df_summary.to_csv(csv_path, index=False, encoding=self.io.csv_encoding)
 
-        ax.hist(
-            values,
-            bins=self.hist.bins,
-            range=(rmin, rmax),
-            edgecolor="black",
-            alpha=0.85
-        )
+            current, peak = tracemalloc.get_traced_memory()
+            mem_kb = (peak - current) / 1024.0
 
-        # 目安線
-        ax.axvline(peak,   color="#d62728", linestyle="--", linewidth=2, label=f"Peak={peak}")
-        ax.axvline(mean,   color="#1f77b4", linestyle=":",  linewidth=2, label=f"Mean={mean:.1f}")
-        ax.axvline(median, color="#2ca02c", linestyle="-.", linewidth=2, label=f"Median={median:.1f}")
-        ax.axvline(p95,    color="#9467bd", linestyle="-",  linewidth=1.8, label=f"P95={p95:.1f}")
-
-        ax.set_title("YAIBA: 同時接続数の分布（JST, 1秒分解能）")
-        ax.set_xlabel("同時接続数 [users]")
-        ax.set_ylabel("度数 [counts]")
-        ax.legend(loc="upper right")
-        ax.grid(True, linestyle="--", alpha=0.3)
-
-        # サマリ注釈
-        ax.text(
-            0.02, 0.98,
-            f"peak={peak}  mean={mean:.1f}  median={median:.1f}  p95={p95:.1f}",
-            transform=ax.transAxes, ha="left", va="top"
-        )
-        return fig
-
-    # --------- 保存 ----------
-    def save_png(self, fig: plt.Figure, out_path: str) -> str:
-        os.makedirs(os.path.dirname(out_path), exist_ok=True)
-        fig.savefig(out_path, bbox_inches="tight")
-        return out_path
-
-    def save_csv(self, conc_df: pd.DataFrame, out_path: str) -> str:
-        os.makedirs(os.path.dirname(out_path), exist_ok=True)
-        conc_df.to_csv(out_path, index=False)
-        return out_path
-
-    # --------- 一括実行 ----------
-    def run(self, df: pd.DataFrame, output_basename: Optional[str] = None) -> Dict[str, str]:
-        dt_jst = datetime.now(TZ_JST).strftime("%Y%m%d_%H%M%S")
-        mpaths = meta_paths(dt_jst, self.ver)
-        logger = get_logger(run_id=dt_jst, log_path=mpaths["log_path"])
-
-        tracemalloc.start(); snap0 = tracemalloc.take_snapshot()
-        try:
-            conc_df = self.compute_concurrency(df, logger)
-            basename = output_basename or build_basename(
-                event_day=self._event_day_str,
-                filename=self.io.output_filename,
-                dt=dt_jst,
-                ver=self.ver,
-                duration=None,   # 静止画は duration を付けない運用
-            )
-            png_path = result_path("image", basename)
-            csv_path = result_path("table", basename)
-
-            fig = self.plot_hist(conc_df)
-            self.save_png(fig, png_path)
-            self.save_csv(conc_df.rename(columns={"sec_floor":"second_jst"}), csv_path)
-
-            snap1 = tracemalloc.take_snapshot()
-            mem_kb = sum(st.size_diff for st in snap1.compare_to(snap0, "lineno")) / 1024.0
-
-            stats = {
-                "png_path": png_path,
-                "csv_path": csv_path,
-                "log_path": mpaths["log_path"],
-                "peak": int(conc_df["concurrency"].max()),
-                "mean": round(float(conc_df["concurrency"].mean()), 2),
-                "median": round(float(np.median(conc_df["concurrency"].to_numpy())), 2),
-                "p95": round(float(np.percentile(conc_df["concurrency"].to_numpy(), 95)), 2),
+            result = {
+                "png": png_path,
+                "csv": csv_path,
+                "users": int(df_summary.shape[0]),
+                "mean": round(stats["mean"], 2) if not math.isnan(stats["mean"]) else float("nan"),
+                "median": round(stats["median"], 2) if not math.isnan(stats["median"]) else float("nan"),
+                "p95": round(stats["p95"], 2) if not math.isnan(stats["p95"]) else float("nan"),
                 "mem_kb_diff": round(mem_kb, 1),
             }
-            log_summary(logger, stats)
+            log_summary(self.logger, result)
             plt.close(fig)
-            return stats
+            return result
 
-        except PipelineError:
-            raise
         except PermissionError as e:
-            logger.error(f"EC={EC_STORAGE_PERM} perm err={e}")
-            raise PipelineError(EC_STORAGE_PERM, "書込権限不足") from e
+            self.logger.error(f"EC={EC_STORAGE_PERM} perm err={e}")
+            raise
         except OSError as e:
-            logger.error(f"EC={EC_STORAGE_IO} io err={e}")
-            raise PipelineError(EC_STORAGE_IO, "I/O例外") from e
+            self.logger.error(f"EC={EC_STORAGE_IO} io err={e}")
+            raise
+        except ValueError as e:
+            self.logger.error(f"EC={EC_STATS_INPUT} value err={e}")
+            raise
         except Exception as e:
-            logger.exception(f"EC={EC_STATS_UNKNOWN} unexpected err={e}")
-            raise PipelineError(EC_STATS_UNKNOWN, "不明エラー") from e
+            self.logger.exception(f"EC={EC_STATS_UNKNOWN} unexpected err={e}")
+            raise
         finally:
-            gc.collect(); tracemalloc.stop()
+            gc.collect()
+            tracemalloc.stop()
+
+
+# ====== シンプルAPI（既存呼び出しの利便性を維持） ======
+def run_histogram_mvp(
+    df: Optional[pd.DataFrame] = None,
+    csv_path: Optional[Union[str, os.PathLike]] = None,
+    io: Optional[IOParams] = None,
+    hist: Optional[HistParams] = None,
+    ver: Optional[Union[VerParams, str]] = None,
+    output_basename: Optional[str] = None,
+    logger: Optional[logging.Logger] = None,
+) -> Dict:
+    """MVP: 滞在時間ヒストグラムを生成して PNG/CSV を出力し、要約を返す。
+
+    Args:
+        df: 入力 DataFrame（列: second, user_id, (任意)event_day）。csv_path とどちらか必須。
+        csv_path: 入力 CSV/Parquet のパス。
+        io: 出力やファイル名設定。未指定でも OK（設計既定パスに保存）。
+        hist: ヒスト設定（bins 等）。未指定ならデフォルト。
+        ver: バージョン付与。VerParams でも "v1" のような文字列でも可。
+        output_basename: ファイル名のベース。未指定なら io.output_filename を使用。
+        logger: 任意のロガー。
+
+    Returns:
+        dict: { png, csv, users, mean, median, p95, mem_kb_diff }
+    """
+    if logger is None:
+        logger = logging.getLogger("yaiba_bi.core.histogram")
+        if not logger.handlers:
+            logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+
+    if df is None and csv_path is None:
+        raise ValueError("df or csv_path must be provided")
+
+    if df is None:
+        p = str(csv_path)
+        logger.info(f"[Dwell] read: {p}")
+        if p.lower().endswith((".parquet", ".parq")):
+            # 要: pyarrow
+            df = pd.read_parquet(p, engine="pyarrow")
+        else:
+            df = pd.read_csv(p)
+
+    io = io or IOParams()
+    hist = hist or HistParams()
+    gen = HistogramGenerator(io=io, hist=hist, ver=ver)
+    return gen.run(df, output_basename or io.output_filename)
+
+
+# ====== ローカル単体動作用（任意） ======
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+    # ダミーデータ例: 3ユーザ（A/B/C）
+    rng = pd.date_range("2025-10-06 23:59:00+09:00", periods=301, freq="S")
+    df_demo = pd.DataFrame({
+        "second": np.concatenate([rng, rng, rng[:120]]),
+        "user_id": ["A"]*301 + ["B"]*301 + ["C"]*120,
+    })
+    res = run_histogram_mvp(df=df_demo, output_basename="demo_hist")
+    print(json.dumps(res, ensure_ascii=False, indent=2))
