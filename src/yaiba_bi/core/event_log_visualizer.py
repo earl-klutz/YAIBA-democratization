@@ -307,6 +307,7 @@ class EventLogVisualizer:
         ax.plot(x, df_cc["cc"], linewidth=1.5, color="#1f77b4")
         ax.set_xlabel("時間 (JST)")
         ax.set_ylabel("同時接続数")
+        ax.set_title("同時接続数の推移")
         ax.grid(True, linestyle="--", alpha=0.3)
 
         # x軸のフォーマットを mm-dd HH:mm (JST) に
@@ -447,13 +448,17 @@ class EventLogVisualizer:
         handles = []
         labels = []
 
+        # 参加者数に応じて自動で線幅をスケール
+        n_users = max(1, df_pos["user_id"].nunique())
+        auto_linewidth = max(0.3, float(3.0 / np.sqrt(n_users)))
+
         for idx, (user_id, group) in enumerate(df_pos.groupby("user_id")):
             color = self._color_for(idx)
             group = group.sort_values("second")
             segments = self._apply_breaks(group, tcfg.break_gap_factor)
             line_handle = None
             for seg in segments:
-                [line_handle] = ax.plot(seg["location_x"], seg["location_z"], linewidth=1.5, color=color)
+                [line_handle] = ax.plot(seg["location_x"], seg["location_z"], linewidth=auto_linewidth, color=color)
             start = group.iloc[0]
             end = group.iloc[-1]
             ax.scatter(start["location_x"], start["location_z"], s=tcfg.start_marker_size_px**2, marker="o", color=color, zorder=3)
@@ -465,10 +470,8 @@ class EventLogVisualizer:
         ax.set_xlabel("x [m]")
         ax.set_ylabel("z [m]")
         ax.set_aspect("equal")
+        ax.set_title("参加者の軌跡")
         ax.grid(True, linestyle="--", alpha=0.3)
-
-        if handles:
-            ax.legend(handles, labels, loc="upper right")
 
         fig.tight_layout()
         fig.savefig(out_path, dpi=rcfg.dpi)
