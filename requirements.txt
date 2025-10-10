@@ -1,4 +1,6 @@
 matplotlib
+japanize-matplotlib
+setuptools
 numpy
 pandas
 pyarrow
