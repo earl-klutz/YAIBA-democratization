@@ -44,10 +44,6 @@ class Theme:
 
 @dataclass
 class MovieParams:
-    # duration_real: int = 10800   # [sec] 解析対象上限
-    # format: str = "mp4"
-    # fps: int = 30
-    # duration_sec: int = 60
 
     duration_real: int = 10800   # [sec] 解析対象上限
     format: str = "mp4"
@@ -75,6 +71,7 @@ class IOParams:
     overwrite: bool = False
 
 MovieIOParams = IOParams
+
 
 def _resolve_bitrate_kbps(movie: MovieParams) -> int:
     val = getattr(movie, "bitrate_kbps", None)

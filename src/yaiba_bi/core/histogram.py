@@ -20,6 +20,7 @@ import tracemalloc
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from .naming import RESULT_ROOT
 from typing import Optional, Dict, Tuple, Union
 from zoneinfo import ZoneInfo
 
@@ -85,8 +86,11 @@ def require_columns(df: pd.DataFrame):
 
 
 def _default_hist_out_dir() -> str:
-    # 設計書準拠: YAIBA_RESULTS_DIR（未設定時は固定）/histograms
-    base = Path(os.getenv("YAIBA_RESULTS_DIR", "/content/YAIBA_data/output/results"))
+    """
+    設計書準拠: YAIBA_RESULT_ROOT/histograms
+    ※ 環境変数が無ければ naming.RESULT_ROOT を既定値に
+    """
+    base = Path(os.getenv("YAIBA_RESULT_ROOT", RESULT_ROOT))
     return str(base / "histograms")
 
 
@@ -160,22 +164,19 @@ class HistogramGenerator:
 
     # --- 描画 ---
     def draw_histogram(self, data: np.ndarray) -> Tuple[plt.Figure, plt.Axes, Dict[str, float]]:
-        # figsize 決定：width/height があれば優先
+        # ピクセル基準に統一（width/height は px と解釈）
+        dpi_base = float(self.hist.dpi or self.io.png_dpi or 144)
         if self.hist.width and self.hist.height:
-            if self.hist.dpi:  # px 指定として inch へ変換
-                figsize = (float(self.hist.width) / float(self.hist.dpi),
-                           float(self.hist.height) / float(self.hist.dpi))
-            else:              # inch 指定
-                figsize = (float(self.hist.width), float(self.hist.height))
+            figsize = (float(self.hist.width) / dpi_base,
+                       float(self.hist.height) / dpi_base)
         else:
             figsize = self.hist.figsize
 
         fig, ax = plt.subplots(figsize=figsize)
-        if self.hist.dpi:
-            try:
-                fig.set_dpi(int(self.hist.dpi))
-            except Exception:
-                pass
+        try:
+            fig.set_dpi(int(dpi_base))
+        except Exception:
+            pass
 
         bins = self.hist.bins if self.hist.bins is not None else "auto"
         ax.hist(data, bins=bins, edgecolor=self.hist.edgecolor)
