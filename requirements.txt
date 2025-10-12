@@ -1,4 +1,6 @@
 matplotlib
+japanize-matplotlib
+setuptools
 numpy
 pandas
 pyarrow
@@ -7,3 +9,5 @@ scipy
 pytest
 imageio-ffmpeg
 tzdata
+tqdm
+japanize-matplotlib
