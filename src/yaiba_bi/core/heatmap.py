@@ -23,7 +23,9 @@ font_list = [font for font in fonts if "NotoSansCJK-Regular.ttc" in font]
 if not font_list:
     raise FileNotFoundError("NotoSansCJK-Regular.ttc not found")
 
-plt.rcParams["font.family"] = font_list[0]
+font_property = fm.FontProperties(fname=font_list[0])
+
+plt.rcParams["font.family"] = font_property.get_name()
 
 
 @dataclass
