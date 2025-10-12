@@ -7,7 +7,7 @@ from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
 
 import matplotlib.pyplot as plt
 # TODO: japanize_matplotlibを使用しないようにする
-import japanize_matplotlib
+# import japanize_matplotlib
 import numpy as np
 import pandas as pd
 import matplotlib.dates as mdates
