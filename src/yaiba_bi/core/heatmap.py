@@ -1,4 +1,5 @@
 import os
+import shutil
 import logging
 from dataclasses import dataclass
 from datetime import timedelta, timezone
@@ -16,6 +17,10 @@ from .yaiba_loader import Area
 
 
 JST = timezone(timedelta(hours=9))
+
+font_cache_path = os.path.expanduser("~/.cache/matplotlib")
+if os.path.exists(font_cache_path):
+    shutil.rmtree(font_cache_path)
 
 fonts = fm.findSystemFonts()
 font_list = [font for font in fonts if "NotoSansCJK-Regular.ttc" in font]
