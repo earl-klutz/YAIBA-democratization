@@ -18,16 +18,13 @@ from .yaiba_loader import Area
 
 JST = timezone(timedelta(hours=9))
 
-font_cache_path = os.path.expanduser("~/.cache/matplotlib")
-if os.path.exists(font_cache_path):
-    shutil.rmtree(font_cache_path)
-
 fonts = fm.findSystemFonts()
 font_list = [font for font in fonts if "NotoSansCJK-Regular.ttc" in font]
 
 if not font_list:
     raise FileNotFoundError("NotoSansCJK-Regular.ttc not found")
 
+fm.fontManager.addfont(font_list[0])
 font_property = fm.FontProperties(fname=font_list[0])
 
 plt.rcParams["font.family"] = font_property.get_name()
