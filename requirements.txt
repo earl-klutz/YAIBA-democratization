@@ -9,3 +9,5 @@ scipy
 pytest
 imageio-ffmpeg
 tzdata
+tqdm
+japanize-matplotlib
