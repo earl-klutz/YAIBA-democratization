@@ -9,13 +9,21 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
 from scipy.ndimage import gaussian_filter
 
 from .yaiba_loader import Area
 
 
 JST = timezone(timedelta(hours=9))
-plt.rcParams["font.family"] = "Noto Sans CJK JP"
+
+fonts = fm.findSystemFonts()
+font_list = [font for font in fonts if "NotoSansCJK-Regular.ttc" in font]
+
+if not font_list:
+    raise FileNotFoundError("NotoSansCJK-Regular.ttc not found")
+
+plt.rcParams["font.family"] = font_list[0]
 
 
 @dataclass
