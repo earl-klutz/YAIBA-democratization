@@ -17,7 +17,7 @@ from .yaiba_loader import Area
 
 
 JST = timezone(timedelta(hours=9))
-"""
+
 font_cache_path = os.path.expanduser("~/.cache/matplotlib")
 if os.path.exists(font_cache_path):
     shutil.rmtree(font_cache_path)
@@ -31,7 +31,7 @@ if not font_list:
 font_property = fm.FontProperties(fname=font_list[0])
 
 plt.rcParams["font.family"] = font_property.get_name()
-"""
+
 
 
 @dataclass
