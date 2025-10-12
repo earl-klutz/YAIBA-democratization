@@ -11,7 +11,12 @@ import matplotlib.font_manager as fm
 
 
 def setup_fonts() -> None:
+    plt.rcParams["font.family"] = "Noto Sans CJK JP"
+    return
+
     """環境依存フォント設定を適用"""
+    """
+    次期以降の開発で要検討
     if platform.system() == "Windows":
         # --- Windows: メイリオを使用 ---
         plt.rcParams["font.family"] = "Meiryo"
@@ -26,3 +31,4 @@ def setup_fonts() -> None:
             plt.rcParams["font.family"] = ["Noto Sans CJK JP", "IPAGothic", "DejaVu Sans"]
 
     plt.rcParams["axes.unicode_minus"] = False
+    """

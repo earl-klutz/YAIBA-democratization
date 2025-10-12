@@ -15,7 +15,7 @@ from .yaiba_loader import Area
 
 
 JST = timezone(timedelta(hours=9))
-plt.rcParams["font.family"] = "Hiragino Maru Gothic Pro"
+plt.rcParams["font.family"] = "Noto Sans CJK JP"
 
 
 @dataclass

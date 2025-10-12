@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
 
+import matplotlib
 import matplotlib.pyplot as plt
 # TODO: japanize_matplotlibを使用しないようにする
 # import japanize_matplotlib
@@ -21,6 +22,8 @@ __all__ = [
     "TrajectoryConfig",
     "EventLogVisualizer",
 ]
+
+plt.rcParams["font.family"] = "Noto Sans CJK JP"
 
 
 @dataclass(frozen=True)

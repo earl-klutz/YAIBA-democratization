@@ -39,6 +39,7 @@ EC_STATS_EMPTY  = -2302
 EC_STATS_UNKNOWN= -2399
 
 JST = ZoneInfo("Asia/Tokyo")
+plt.rcParams["font.family"] = "Noto Sans CJK JP"
 
 # ====== パラメータ定義 ======
 @dataclass
