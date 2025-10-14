@@ -68,6 +68,7 @@ class TrailParams:
 @dataclass
 class IOParams:
     output_filename: str = "movie"
+    out_dir: Optional[str] = None
     overwrite: bool = False
 
 MovieIOParams = IOParams

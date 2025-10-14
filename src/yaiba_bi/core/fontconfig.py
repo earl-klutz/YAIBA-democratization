@@ -11,7 +11,6 @@ import matplotlib.font_manager as fm
 
 
 def setup_fonts() -> None:
-    plt.rcParams["font.family"] = "Noto Sans CJK JP"
     return
 
     """環境依存フォント設定を適用"""

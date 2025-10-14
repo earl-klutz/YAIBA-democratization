@@ -23,8 +23,6 @@ __all__ = [
     "EventLogVisualizer",
 ]
 
-plt.rcParams["font.family"] = "Noto Sans CJK JP"
-
 
 @dataclass(frozen=True)
 class ErrorInfo:

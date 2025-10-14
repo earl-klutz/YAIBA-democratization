@@ -1,5 +1,4 @@
 import os
-import shutil
 import logging
 from dataclasses import dataclass
 from datetime import timedelta, timezone
@@ -21,14 +20,13 @@ JST = timezone(timedelta(hours=9))
 fonts = fm.findSystemFonts()
 font_list = [font for font in fonts if "NotoSansCJK-Regular.ttc" in font]
 
-if not font_list:
-    raise FileNotFoundError("NotoSansCJK-Regular.ttc not found")
-
-fm.fontManager.addfont(font_list[0])
-font_property = fm.FontProperties(fname=font_list[0])
-
-plt.rcParams["font.family"] = font_property.get_name()
-
+if font_list:
+    fm.fontManager.addfont(font_list[0])
+    font_property = fm.FontProperties(fname=font_list[0])
+    plt.rcParams["font.family"] = font_property.get_name()
+else:
+    pass
+    # raise FileNotFoundError("NotoSansCJK-Regular.ttc not found")
 
 
 @dataclass
