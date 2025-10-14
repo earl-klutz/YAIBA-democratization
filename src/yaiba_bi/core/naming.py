@@ -18,7 +18,8 @@ def result_path(kind: str, basename: str) -> str:
     出力ファイルの絶対パスを生成。
     優先: YAIBA_RESULT_ROOT > RESULT_ROOT
     """
-    root = Path(os.getenv("YAIBA_RESULT_ROOT", RESULT_ROOT))
+    # root = Path(os.getenv("YAIBA_RESULT_ROOT", RESULT_ROOT))
+    root = Path("./YAIBA_data/output")
 
     subdir_map  = {"movie": "movies", "image": "images", "table": "tables"}
     ext_map     = {"movie": "mp4",    "image": "png",    "table": "csv"}
