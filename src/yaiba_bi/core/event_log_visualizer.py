@@ -5,9 +5,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
 
+import matplotlib
 import matplotlib.pyplot as plt
 # TODO: japanize_matplotlibを使用しないようにする
-import japanize_matplotlib
+# import japanize_matplotlib
 import numpy as np
 import pandas as pd
 import matplotlib.dates as mdates
@@ -112,7 +113,7 @@ class TrajectoryConfig:
 class _Naming:
     """成果物ファイルのパス組み立てユーティリティ。"""
 
-    RESULT_ROOT: Path = Path("content/YAIBA_data/output")
+    RESULT_ROOT: Path = Path("./YAIBA_data/output")
 
     def ensure_dirs(self) -> None:
         """必要なディレクトリを作成する。"""

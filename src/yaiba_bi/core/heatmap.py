@@ -9,13 +9,24 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
 from scipy.ndimage import gaussian_filter
 
 from .yaiba_loader import Area
 
 
 JST = timezone(timedelta(hours=9))
-plt.rcParams["font.family"] = "Hiragino Maru Gothic Pro"
+
+fonts = fm.findSystemFonts()
+font_list = [font for font in fonts if "NotoSansCJK-Regular.ttc" in font]
+
+if font_list:
+    fm.fontManager.addfont(font_list[0])
+    font_property = fm.FontProperties(fname=font_list[0])
+    plt.rcParams["font.family"] = font_property.get_name()
+else:
+    pass
+    # raise FileNotFoundError("NotoSansCJK-Regular.ttc not found")
 
 
 @dataclass

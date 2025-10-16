@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 
 # ルートは環境変数で差し替え可（Windows/Colab両対応）
-DEFAULT_RESULT_ROOT = str((Path.cwd() / "results").resolve())
+DEFAULT_RESULT_ROOT = str((Path.cwd() / "YAIBA_data/output").resolve())
 RESULT_ROOT = os.getenv("YAIBA_RESULT_ROOT") or DEFAULT_RESULT_ROOT
 META_ROOT = os.getenv("YAIBA_META_ROOT") or str(Path(RESULT_ROOT) / "meta")
 
@@ -18,7 +18,8 @@ def result_path(kind: str, basename: str) -> str:
     出力ファイルの絶対パスを生成。
     優先: YAIBA_RESULT_ROOT > RESULT_ROOT
     """
-    root = Path(os.getenv("YAIBA_RESULT_ROOT", RESULT_ROOT))
+    # root = Path(os.getenv("YAIBA_RESULT_ROOT", RESULT_ROOT))
+    root = Path("./YAIBA_data/output")
 
     subdir_map  = {"movie": "movies", "image": "images", "table": "tables"}
     ext_map     = {"movie": "mp4",    "image": "png",    "table": "csv"}
