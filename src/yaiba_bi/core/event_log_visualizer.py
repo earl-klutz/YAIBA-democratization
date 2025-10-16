@@ -113,7 +113,7 @@ class TrajectoryConfig:
 class _Naming:
     """成果物ファイルのパス組み立てユーティリティ。"""
 
-    RESULT_ROOT: Path = Path("content/YAIBA_data/output")
+    RESULT_ROOT: Path = Path("./YAIBA_data/output")
 
     def ensure_dirs(self) -> None:
         """必要なディレクトリを作成する。"""
