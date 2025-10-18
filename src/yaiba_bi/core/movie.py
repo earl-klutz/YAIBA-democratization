@@ -61,7 +61,7 @@ class PointParams:
 
 @dataclass
 class TrailParams:
-    length_real_seconds: int = 30
+    length_real_seconds: int = 0
     alpha_start: float = 1.0
     alpha_end: float = 0.1
 
@@ -160,16 +160,9 @@ class MovieGenerator:
         zmn = self.boundary.get("location_z_min", float(df["location_z"].min()))
         zmx = self.boundary.get("location_z_max", float(df["location_z"].max()))
 
-        # --- 色は一度だけ決めて配列で参照（dictルックアップを毎フレームやらない） ---
         users = pd.Index(df["user_id"].unique())
         cmap = plt.get_cmap(self.theme.palette, max(10, len(users)))
         uid_to_rgba = {uid: cmap(i % cmap.N) for i, uid in enumerate(users)}
-        # code化（0..n-1）しておくと配列参照が速い
-        uid_cat = pd.Categorical(df["user_id"], categories=users, ordered=False)
-        uid_codes = uid_cat.codes.astype(np.int32)  # -1 は欠損を意味する
-        color_table = np.array([cmap(i % cmap.N) for i in range(len(users))], dtype=np.float32)
-        # 行並びに合わせて色コードを保持
-        df = df.assign(_uid_code=uid_codes)
 
         t0 = df["sec_floor"].min()
         tmax = df["sec_floor"].max()
@@ -178,10 +171,17 @@ class MovieGenerator:
         total_frames = max(1, int(round(dur * self.movie.fps)))
         sec_per_frame = (real_span / (total_frames - 1)) if total_frames > 1 else 0.0
 
-        #   「秒→行範囲のインデックス表」に置き換えると更に速い
-        by_sec: Dict[pd.Timestamp, pd.DataFrame] = dict(tuple(df.groupby("sec_floor", sort=True)))
-        trail_frames: int = max(1, int(math.ceil(self.trail.length_real_seconds / max(1e-9, sec_per_frame))))
-        trail_buf: Deque[pd.DataFrame] = deque(maxlen=trail_frames)
+        by_sec: Dict[pd.Timestamp, pd.DataFrame] = dict(tuple(df.groupby("sec_floor")))
+        # ── trail を使うか判定（長さ>0 かつ 可視alphaのときのみ有効）
+        use_trail = (
+            (self.trail.length_real_seconds > 0) and
+            (self.trail.alpha_start > 0 or self.trail.alpha_end > 0)
+        )
+        if use_trail:
+            trail_frames: int = max(1, int(math.ceil(self.trail.length_real_seconds / max(1e-9, sec_per_frame))))
+            trail_buf: Deque[pd.DataFrame] = deque(maxlen=trail_frames)
+        else:
+            trail_buf = None  # type: ignore[assignment]
 
         dpi = 120
         fig, ax = plt.subplots(figsize=(960/dpi, 720/dpi), dpi=dpi)
@@ -189,103 +189,70 @@ class MovieGenerator:
         ax.set_facecolor("white")
         ax.set_xlim(xmn, xmx); ax.set_ylim(zmn, zmx)
         ax.set_xlabel("X [m]"); ax.set_ylabel("Z [m]")
-        
-        # --- タイトル・凡例は焼き付け（更新しない） ---
-        ax.text(0.5, 1.02, "YAIBA: ユーザー位置 2Dプロット",
-                transform=ax.transAxes, ha="center", va="bottom")
-        # 動的テキストだけ animated=True
-        tlabel = ax.text(0.02, 0.98, "", transform=ax.transAxes, ha="left", va="top", animated=True)
+        title = ax.text(0.5, 1.02, "YAIBA: ユーザー位置 2Dプロット", transform=ax.transAxes, ha="center", va="bottom")
+        tlabel = ax.text(0.02, 0.98, "", transform=ax.transAxes, ha="left", va="top")
 
-        # --- 毎フレーム更新するArtistは animated=True で一度だけ作る ---
-        curr = ax.scatter([], [], s=self.point.radius_px**2, alpha=self.point.alpha, animated=True)
-        trail_sc = ax.scatter([], [], s=(self.point.radius_px * 0.35) ** 2, animated=True)
+        curr = ax.scatter([], [], s=self.point.radius_px**2, alpha=self.point.alpha)
+        if use_trail:
+            trail_sc = ax.scatter([], [], s=(self.point.radius_px * 0.35) ** 2)
+        else:
+            trail_sc = ax.scatter([], [], s=1, alpha=0)  
 
+        times = []
         times: list[pd.Timestamp] = []
         for i in range(total_frames):
             ti = t0 if total_frames == 1 else t0 + pd.to_timedelta(i * sec_per_frame, unit="s")
             times.append(min(ti, tmax))
 
-        # --- 時刻ラベルは前計算（JST文字列） ---
-        def _to_jst_str(ti: pd.Timestamp) -> str:
-            # tz-naive → UTC扱いでJSTへ、tzあり → JSTへ
-            if ti.tzinfo:
-                return ti.tz_convert("Asia/Tokyo").strftime("%Y-%m-%d %H:%M:%S JST")
-            else:
-                return ti.tz_localize("UTC").tz_convert("Asia/Tokyo").strftime("%Y-%m-%d %H:%M:%S JST")
-        times_floor = [pd.Timestamp(t).floor("s") for t in times]
-        times_str = [_to_jst_str(t) for t in times_floor]
-
+        def _frame(i: int):
+            ts = times[i].floor("s")
         def _frame(ts):
             # Matplotlib から渡される frame を「時刻」として扱う
+            # 念のため秒丸め（小文字 "s"）
             ts = pd.Timestamp(ts).floor("s")
 
+            # 秒ごとのデータを取得（なければ空DF）
             df_now = by_sec.get(ts)
-            if df_now is None or df_now.empty:
-                # 現フレームの点なし
-                curr.set_offsets(np.empty((0, 2), dtype=np.float32))
-                curr.set_facecolors(np.empty((0, 4), dtype=np.float32))
-            else:
-                # 位置は2列をまとめて一回でセット
-                offs_now = np.c_[df_now["location_x"].to_numpy(np.float32),
-                                 df_now["location_z"].to_numpy(np.float32)]
-                curr.set_offsets(offs_now)
-                # 色：コード→テーブル参照で配列一括
-                codes_now = df_now["_uid_code"].to_numpy(np.int32, copy=False)
-                curr.set_facecolors(color_table[codes_now])
-            trail_buf.append(df_now if df_now is not None else pd.DataFrame())
+            if df_now is None:
+                df_now = pd.DataFrame(columns=["user_id", "location_x", "location_z"])
 
-            # --- トレイル更新（配列一括、alphaは等間隔グラデ） ---
-            if len(trail_buf) > 0:
-                # 空を除外して連結（Pythonループでの点ごとappendは避ける）
-                non_empty = [dfk for dfk in trail_buf if dfk is not None and not dfk.empty]
-                if non_empty:
-                    K = len(trail_buf)
-                    # バッファの先頭→末尾で alpha が上がる
-                    if K > 1:
-                        alphas_levels = np.linspace(self.trail.alpha_start, self.trail.alpha_end, K, dtype=np.float32)
-                    else:
-                        alphas_levels = np.array([self.trail.alpha_end], dtype=np.float32)
-                    xs_list, zs_list, cols_list = [], [], []
-                    for k, dfk in enumerate(trail_buf):
-                        if dfk is None or dfk.empty:
-                            continue
-                        xs_list.append(dfk["location_x"].to_numpy(np.float32))
-                        zs_list.append(dfk["location_z"].to_numpy(np.float32))
-                        codes_k = dfk.get("_uid_code")
-                        if codes_k is None or dfk.empty:
-                            continue
-                        col = color_table[codes_k.to_numpy(np.int32, copy=False)].copy()
-                        col[:, 3] = alphas_levels[k]   # alphaだけ上書き
-                        cols_list.append(col)
-                    if xs_list:
-                        xs_cat = np.concatenate(xs_list) if len(xs_list) > 1 else xs_list[0]
-                        zs_cat = np.concatenate(zs_list) if len(zs_list) > 1 else zs_list[0]
-                        cols_cat = np.concatenate(cols_list) if len(cols_list) > 1 else cols_list[0]
-                        trail_sc.set_offsets(np.c_[xs_cat, zs_cat])
-                        trail_sc.set_facecolors(cols_cat)
-                    else:
-                        trail_sc.set_offsets(np.empty((0, 2), dtype=np.float32))
-                        trail_sc.set_facecolors(np.empty((0, 4), dtype=np.float32))
+            if use_trail:
+                if df_now is None:
+                    df_now = pd.DataFrame(columns=["user_id", "location_x", "location_z"])
+                trail_buf.append(df_now)
+
+            if not df_now.empty:
+                offs = np.c_[df_now["location_x"].to_numpy(), df_now["location_z"].to_numpy()]
+                cols = [uid_to_rgba[uid] for uid in df_now["user_id"]]
+                curr.set_offsets(offs); curr.set_facecolors(cols)
+            else:
+                curr.set_offsets(np.empty((0, 2))); curr.set_facecolors([])
+
+            if use_trail and len(trail_buf) > 0:
+                xs, zs, cols = [], [], []
+                K = len(trail_buf)
+                for k, dfk in enumerate(trail_buf):
+                    if dfk is None or dfk.empty: continue
+                    alpha = self.trail.alpha_start + (self.trail.alpha_end - self.trail.alpha_start) * (k / max(1, K-1))
+                    for uid, x, z in zip(dfk["user_id"], dfk["location_x"], dfk["location_z"]):
+                        r,g,b,_ = uid_to_rgba[uid]; xs.append(x); zs.append(z); cols.append((r,g,b,alpha))
+                if xs:
+                    trail_sc.set_offsets(np.c_[np.array(xs), np.array(zs)]); trail_sc.set_facecolors(np.array(cols))
                 else:
-                    trail_sc.set_offsets(np.empty((0, 2), dtype=np.float32))
-                    trail_sc.set_facecolors(np.empty((0, 4), dtype=np.float32))
+                    trail_sc.set_offsets(np.empty((0, 2))); trail_sc.set_facecolors([])
             else:
-                trail_sc.set_offsets(np.empty((0, 2), dtype=np.float32))
-                trail_sc.set_facecolors(np.empty((0, 4), dtype=np.float32))
+                trail_sc.set_offsets(np.empty((0, 2))); trail_sc.set_facecolors([])
 
-            # --- 事前計算したJSTラベルを差し替え（重複処理を排除） ---
-            # frames=times を渡しているので floor した時刻のインデックスは同じ順序
-            # 直接 ts を検索せず、times_floor と同順である前提で i を使う方法も可
-            tlabel.set_text(_to_jst_str(ts))
-            # blit=True のため更新対象のみ返す
-            return (curr, trail_sc, tlabel)
+            tlabel.set_text(ts.tz_convert("Asia/Tokyo").strftime("%Y-%m-%d %H:%M:%S JST"))
+            # tz-naive の場合でも安全に JST 表示
+            ts_jst = ts.tz_convert("Asia/Tokyo") if ts.tzinfo else ts.tz_localize("UTC").tz_convert("Asia/Tokyo")
+            tlabel.set_text(ts_jst.strftime("%Y-%m-%d %H:%M:%S JST"))
+            return curr, trail_sc, title, tlabel
 
         # フレーム列として「時刻リスト」を渡すことで IndexError を根絶
-        # blit=True で動的Artistのみを再描画（タイトル等は焼き付け）
-        interval_ms = max(1, int(round(1000.0 / max(1, int(self.movie.fps)))))
         anim = animation.FuncAnimation(
-            fig, _frame, frames=times, interval=interval_ms,
-            blit=True, cache_frame_data=False,
+            fig, _frame, frames=times, interval=1000 / self.movie.fps,
+            blit=False, cache_frame_data=False
         )
         info = {
             "frames": total_frames,
@@ -304,37 +271,17 @@ class MovieGenerator:
     def save_mp4(self, anim: animation.FuncAnimation, out_path: str, logger: logging.Logger) -> str:
         try:
             br = _resolve_bitrate_kbps(self.movie)
-            # --- エンコーダ選択（CPU/GPU）と高速プリセット ---
-            # self.movie.codec に "libx264"/"libx265"/"h264_nvenc"/"hevc_nvenc"/"h264_qsv"/"h264_amf" 等を想定
-            codec = getattr(self.movie, "codec", None) or "libx264"
-            extra = ["-movflags", "+faststart", "-y"]
-            if codec in ("libx264", "libx265"):
-                extra = ["-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", str(getattr(self.movie, "crf", 23))] + extra
-            elif codec in ("h264_nvenc", "hevc_nvenc"):
-                cq = str(getattr(self.movie, "cq", 23))
-                preset = str(getattr(self.movie, "preset", "p5"))  # p1..p7
-                tune = str(getattr(self.movie, "tune", "hq"))
-                extra = ["-pix_fmt", "yuv420p", "-rc", "vbr", "-cq", cq, "-b:v", "0", "-preset", preset, "-tune", tune] + extra
-            elif codec == "h264_qsv":
-                gq = str(getattr(self.movie, "global_quality", 23))
-                extra = ["-pix_fmt", "nv12", "-global_quality", gq, "-look_ahead", "1", "-preset", "veryfast"] + extra
-            elif codec == "h264_amf":
-                q = str(getattr(self.movie, "qvbr", 23))
-                extra = ["-pix_fmt", "yuv420p", "-quality", "speed", "-rc", "vbr", "-qvbr", q] + extra
-            # 任意: キーフレーム間隔（シーク改善）
-            gop = int(getattr(self.movie, "gop", self.movie.fps * 2))
-            extra += ["-g", str(gop)]
-
             writer = animation.FFMpegWriter(
-                fps=self.movie.fps, bitrate=br, codec=codec, extra_args=extra
+                fps=self.movie.fps, bitrate=br,
+                codec="libx264", extra_args=["-pix_fmt", "yuv420p", "-movflags", "+faststart", "-y"],
             )
 
             # 総フレーム数の安全取得
             total_frames = (getattr(anim, "save_count", None) or getattr(anim, "_save_count", None) or int(self.movie.duration_sec * self.movie.fps))
-            stride = max(1, int(self.movie.fps))  # 1秒ごと（進捗更新のみ）
- 
+            stride = max(1, int(self.movie.fps))  # 1秒ごと
+
             _ensure_dir(out_path, logger)
- 
+
             with tqdm(total=total_frames, desc="Encoding", unit="frame") as pbar:
                 def _progress(i, n):
                     if n != pbar.total:
@@ -343,7 +290,7 @@ class MovieGenerator:
                         delta = (i + 1) - pbar.n
                         if delta > 0:
                             pbar.update(delta)
- 
+
                 anim.save(out_path, writer=writer, progress_callback=_progress)
             return out_path
 
