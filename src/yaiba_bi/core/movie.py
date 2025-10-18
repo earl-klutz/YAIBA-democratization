@@ -61,7 +61,7 @@ class PointParams:
 
 @dataclass
 class TrailParams:
-    length_real_seconds: int = 30
+    length_real_seconds: int = 0
     alpha_start: float = 1.0
     alpha_end: float = 0.1
 
@@ -173,8 +173,16 @@ class MovieGenerator:
         sec_per_frame = (real_span / (total_frames - 1)) if total_frames > 1 else 0.0
 
         by_sec: Dict[pd.Timestamp, pd.DataFrame] = dict(tuple(df.groupby("sec_floor")))
-        trail_frames: int = max(1, int(math.ceil(self.trail.length_real_seconds / max(1e-9, sec_per_frame))))
-        trail_buf: Deque[pd.DataFrame] = deque(maxlen=trail_frames)
+        # ── trail を使うか判定（長さ>0 かつ 可視alphaのときのみ有効）
+        use_trail = (
+            (self.trail.length_real_seconds > 0) and
+            (self.trail.alpha_start > 0 or self.trail.alpha_end > 0)
+        )
+        if use_trail:
+            trail_frames: int = max(1, int(math.ceil(self.trail.length_real_seconds / max(1e-9, sec_per_frame))))
+            trail_buf: Deque[pd.DataFrame] = deque(maxlen=trail_frames)
+        else:
+            trail_buf = None  # type: ignore[assignment]
 
         dpi = 120
         fig, ax = plt.subplots(figsize=(960/dpi, 720/dpi), dpi=dpi)
@@ -186,10 +194,12 @@ class MovieGenerator:
         tlabel = ax.text(0.02, 0.98, "", transform=ax.transAxes, ha="left", va="top")
 
         curr = ax.scatter([], [], s=self.point.radius_px**2, alpha=self.point.alpha)
-        trail_sc = ax.scatter([], [], s=(self.point.radius_px * 0.35) ** 2)
+        if use_trail:
+            trail_sc = ax.scatter([], [], s=(self.point.radius_px * 0.35) ** 2)
+        else:
+            trail_sc = ax.scatter([], [], s=1, alpha=0)  
 
         times = []
-        # t0→t0+real_span を total_frames 等分（小数秒）。clamp で tmax を超えない
         times: list[pd.Timestamp] = []
         for i in range(total_frames):
             ti = t0 if total_frames == 1 else t0 + pd.to_timedelta(i * sec_per_frame, unit="s")
@@ -207,9 +217,10 @@ class MovieGenerator:
             if df_now is None:
                 df_now = pd.DataFrame(columns=["user_id", "location_x", "location_z"])
 
-            if df_now is None:
-                df_now = pd.DataFrame(columns=["user_id", "location_x", "location_z"])
-            trail_buf.append(df_now)
+            if use_trail:
+                if df_now is None:
+                    df_now = pd.DataFrame(columns=["user_id", "location_x", "location_z"])
+                trail_buf.append(df_now)
 
             if not df_now.empty:
                 offs = np.c_[df_now["location_x"].to_numpy(), df_now["location_z"].to_numpy()]
@@ -218,7 +229,7 @@ class MovieGenerator:
             else:
                 curr.set_offsets(np.empty((0, 2))); curr.set_facecolors([])
 
-            if len(trail_buf) > 0:
+            if use_trail and len(trail_buf) > 0:
                 xs, zs, cols = [], [], []
                 K = len(trail_buf)
                 for k, dfk in enumerate(trail_buf):
