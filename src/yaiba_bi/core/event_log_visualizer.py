@@ -294,6 +294,7 @@ class EventLogVisualizer:
 
         # x軸の時刻を mm-dd HH:mm で表示するように設定
         # 入力はUTCなのでJSTに変換
+        """
         x = df_cc[time_col]
         if pd.api.types.is_datetime64_any_dtype(x):
             # UTC→JST
@@ -304,8 +305,10 @@ class EventLogVisualizer:
         else:
             # 文字列や数値の場合は一度datetimeに変換
             x = pd.to_datetime(x, utc=True).dt.tz_convert(JST)
+        """
 
-        ax.plot(x, df_cc["cc"], linewidth=1.5, color="#1f77b4")
+        # ax.plot(x, df_cc["cc"], linewidth=1.5, color="#1f77b4")
+        ax.plot(df_cc[time_col], df_cc["cc"], linewidth=1.5, color="#1f77b4")
         ax.set_xlabel("時間 (JST)")
         ax.set_ylabel("同時接続数")
         ax.set_title("同時接続数の推移")
@@ -313,7 +316,8 @@ class EventLogVisualizer:
 
         # x軸のフォーマットを mm-dd HH:mm (JST) に
         locator = mdates.AutoDateLocator()
-        formatter = mdates.DateFormatter("%m-%d %H:%M", tz=JST)
+        # formatter = mdates.DateFormatter("%m-%d %H:%M", tz=JST)
+        formatter = mdates.DateFormatter("%m-%d %H:%M")
         ax.xaxis.set_major_locator(locator)
         ax.xaxis.set_major_formatter(formatter)
 
@@ -462,7 +466,7 @@ class EventLogVisualizer:
                 [line_handle] = ax.plot(seg["location_x"], seg["location_z"], linewidth=auto_linewidth, color=color)
             start = group.iloc[0]
             end = group.iloc[-1]
-            ax.scatter(start["location_x"], start["location_z"], s=tcfg.start_marker_size_px**2, marker="o", color=color, zorder=3)
+            # ax.scatter(start["location_x"], start["location_z"], s=tcfg.start_marker_size_px**2, marker="o", color=color, zorder=3)
             ax.scatter(end["location_x"], end["location_z"], s=tcfg.end_marker_size_px**2, marker="^", color=color, zorder=3)
             if line_handle is not None:
                 handles.append(line_handle)
